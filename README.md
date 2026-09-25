@@ -7,9 +7,12 @@ overview, io/serialization, store, btree, htree, testing and decisions — lives
 the private `mapdb/todo` repo under `store-history/golang-store/spec/`, together with the
 rest of the store engines' design record.
 
-Start there. The implementation must match the `mapdb-golang` collection
-interfaces, and is byte-format-compatible with the Java, Rust and Zig ports
-(`MDB5.SD1`, `MDB5.WAL`, all group-format encodings).
+Start there for the draft plan. A future implementation would need to define
+how it fits the `mapdb-golang` collection interfaces. The current Java
+reference uses `MDBS.SD1` for StoreDirect and segmented WAL v3 with
+`MDBS.WAL` segment headers. Rust and Zig also implement WAL v3, but the
+on-disk format is not frozen and no Go file-format compatibility claim can be
+made before an implementation exists.
 
 Reference implementation: `mapdb-java-store`. Completed ports to read alongside
 the spec: `mapdb-rust-store`, `mapdb-zig-store`.
