@@ -423,6 +423,18 @@ func newCInner[K, V any](s store.Store, cfg CConfig[K, V], headerRecid store.Rec
 		// reconstruct the in-memory counter from the persisted queue
 		// (invariant: counter == queue length == physical entries)
 		in.counters[i].Store(int64(q.Len()))
+		// Restore the monotone clock high-water from the newest persisted
+		// deadline (queue order = deadline order), so a Clock that is
+		// behind the previous session cannot enqueue earlier deadlines
+		// behind later ones. Saturated stamps clamp the high-water at
+		// MaxInt64-ttl (no TTL expiry from then on, as within a session).
+		if h.ttl > 0 {
+			if newest := store.Recid(q.HeadPrev()); newest != 0 {
+				if node, ok := store.Get(s, newest, queue.LNodeSer); ok && node.Timestamp != 0 {
+					in.advance(int64(node.Timestamp) - h.ttl)
+				}
+			}
+		}
 	}
 	return in
 }
@@ -666,16 +678,18 @@ func (m *HTreeCache[K, V]) unlockRead(seg int) { m.inner.seg.unlockRead(seg) }
 // now is the MONOTONE clock tick: max(previous, Clock()). A backward step
 // in Clock (wall-clock adjustment) cannot reorder queue deadlines, so the
 // sweep's stop-at-first-live rule stays sound.
-func (m *HTreeCache[K, V]) now() int64 { return m.advance(m.inner.clock()) }
+func (m *HTreeCache[K, V]) now() int64 { return m.inner.advance(m.inner.clock()) }
+
+func (m *HTreeCache[K, V]) advance(t int64) int64 { return m.inner.advance(t) }
 
 // advance folds tick t into the high-water mark and returns the result.
-func (m *HTreeCache[K, V]) advance(t int64) int64 {
+func (in *cinner[K, V]) advance(t int64) int64 {
 	for {
-		prev := m.inner.lastNow.Load()
+		prev := in.lastNow.Load()
 		if t <= prev {
 			return prev
 		}
-		if m.inner.lastNow.CompareAndSwap(prev, t) {
+		if in.lastNow.CompareAndSwap(prev, t) {
 			return t
 		}
 	}
@@ -866,12 +880,24 @@ func (m *HTreeCache[K, V]) flushEvicted(victims *[]cvictim[K, V]) error {
 		// guard is cleared on every exit, any panic payload included.
 		func() {
 			defer m.enterOverflow()()
+			defer func() {
+				if r := recover(); r != nil {
+					e, ok := r.(error)
+					if !ok {
+						panic(r)
+					}
+					first = e // returned, so runWriteFlush keeps the body error primary
+				}
+			}()
 			for _, v := range *victims {
 				if v.reason != EvictTTL {
 					ov.Put(v.key, v.value)
 				}
 			}
 		}()
+		if first != nil {
+			return first
+		}
 	}
 	if el != nil {
 		for _, v := range *victims {
