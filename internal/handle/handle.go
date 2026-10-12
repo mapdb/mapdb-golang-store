@@ -65,5 +65,12 @@ func (t *Tracker) DropSelf() {
 	}
 }
 
+// Holds reports whether the CALLING goroutine currently holds an
+// admission (i.e. it is inside an admitted op).
+func (t *Tracker) Holds() bool {
+	_, ok := t.active.Load(Goid())
+	return ok
+}
+
 // Wait blocks until every admitted op has released.
 func (t *Tracker) Wait() { t.wg.Wait() }

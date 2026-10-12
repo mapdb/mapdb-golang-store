@@ -698,6 +698,19 @@ func validateCatalog(cat NameCatalog) {
 			recidGE1("rootRecidRecid")
 			counterOK("counterRecid")
 			maxNodeOK()
+		case "BufferTreeMap":
+			check(
+				[]string{"keySerializer", "valueSerializer", "rootRecidRecid", "maxNodeSize", "bufferBytes", "leafHeadroom"},
+				nil,
+				map[string]bool{"keySerializer": true, "valueSerializer": true})
+			recidGE1("rootRecidRecid")
+			maxNodeOK()
+			if parseDecimal(fields["bufferBytes"], name+" bufferBytes") < 32 {
+				panic(mapdb5.NewCorruption("catalog '" + name + "' bufferBytes must be >= 32"))
+			}
+			if parseDecimal(fields["leafHeadroom"], name+" leafHeadroom") > 1<<31-1 {
+				panic(mapdb5.NewCorruption("catalog '" + name + "' leafHeadroom out of range"))
+			}
 		case "AtomicLong", "AtomicInteger", "AtomicBoolean", "AtomicString":
 			check([]string{"recid"}, nil, nil)
 			recidGE1("recid")
