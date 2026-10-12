@@ -202,8 +202,8 @@ type hinner[K, V any] struct {
 	// [0, 1<<(concShift+levels*dirShift)): uint32(Hasher.Hash) for the
 	// 32-bit map, top-48 of Hasher64 for the 48-bit variant — one
 	// representation lets both variants share this inner state.
-	hashOf       func(K) int64
-	hashSeed     int64 // 32-bit maps use the low 32 bits
+	hashOf   func(K) int64
+	hashSeed int64 // 32-bit maps use the low 32 bits
 	// seg is the shared per-segment lock+listener machinery (seglock.go).
 	seg          segRuntime[K, V]
 	segmentShift int // levels*dirShift: hash bits consumed by the dir tree

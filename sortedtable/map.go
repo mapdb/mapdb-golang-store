@@ -256,7 +256,7 @@ func NewSinkN[K, V any](s store.Store, keyFormat ser.GroupFormat[K],
 	}
 	return &Sink[K, V]{
 		st: s, keyFormat: keyFormat, valueFormat: valueFormat,
-		pageSer: pageSerializer[K, V]{keyFormat, valueFormat},
+		pageSer:        pageSerializer[K, V]{keyFormat, valueFormat},
 		entriesPerPage: entriesPerPage,
 	}
 }
@@ -663,7 +663,10 @@ func readOnlyMutation() {
 }
 
 // Put panics KindReadOnly — the table is immutable.
-func (m *SortedTableMap[K, V]) Put(key K, value V) (V, bool) { readOnlyMutation(); panic("unreachable") }
+func (m *SortedTableMap[K, V]) Put(key K, value V) (V, bool) {
+	readOnlyMutation()
+	panic("unreachable")
+}
 
 // PutIfAbsent panics KindReadOnly.
 func (m *SortedTableMap[K, V]) PutIfAbsent(key K, value V) (V, bool) {

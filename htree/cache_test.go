@@ -14,8 +14,8 @@ import (
 // fakeClock is the deterministic tick source for expiry tests.
 type fakeClock struct{ now int64 }
 
-func (c *fakeClock) get() int64        { return c.now }
-func (c *fakeClock) advance(d int64)   { c.now += d }
+func (c *fakeClock) get() int64      { return c.now }
+func (c *fakeClock) advance(d int64) { c.now += d }
 
 // ccfg1seg is the single-segment cache config (Java singleSegment):
 // concShift 0 + 8 levels x 4 bits = 32.
@@ -410,11 +410,11 @@ func TestCacheOverwriteSharedBucket(t *testing.T) {
 	cfg := ccfg1seg(clock, 1_000)
 	cfg.Hasher = mdhash.HasherFunc[int64](func(int64, int32) int32 { return 0 })
 	m := NewHTreeCache[int64, int64](s, cfg)
-	m.Put(1, 10)  // stamp +1000
+	m.Put(1, 10) // stamp +1000
 	clock.advance(100)
-	m.Put(2, 20)  // stamp +1100
+	m.Put(2, 20) // stamp +1100
 	clock.advance(100)
-	m.Put(1, 11)  // overwrite key1: re-stamp +1200, bumped ahead of key2
+	m.Put(1, 11)       // overwrite key1: re-stamp +1200, bumped ahead of key2
 	clock.advance(901) // t=1101: key2 lapsed, key1 alive
 	if _, ok := m.Get(2); ok {
 		t.Fatal("neighbor must keep its own earlier expiry")
@@ -518,10 +518,10 @@ func TestCacheModificationListener(t *testing.T) {
 	m := NewHTreeCache[int64, int64](s, ccfgPlain(clock))
 	var mu sync.Mutex
 	type ev struct {
-		k     int64
-		old   *int64
-		new   *int64
-		trig  bool
+		k    int64
+		old  *int64
+		new  *int64
+		trig bool
 	}
 	var got []ev
 	m.ModificationListenerAdd(mapdb5.ModificationListenerFunc[int64, int64](

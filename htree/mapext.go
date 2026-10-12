@@ -286,9 +286,9 @@ func (m *HTreeMapExternal[K, V]) IsClosed() bool {
 	return m.inner.closed.Load() || m.inner.st.IsClosed()
 }
 
-func (m *HTreeMapExternal[K, V]) KeySerializer() ser.Serializer[K]     { return m.inner.keySer }
-func (m *HTreeMapExternal[K, V]) ValueSerializer() ser.Serializer[V]   { return m.inner.valueSer }
-func (m *HTreeMapExternal[K, V]) StateID() uint64                      { return m.inner.id }
+func (m *HTreeMapExternal[K, V]) KeySerializer() ser.Serializer[K]   { return m.inner.keySer }
+func (m *HTreeMapExternal[K, V]) ValueSerializer() ser.Serializer[V] { return m.inner.valueSer }
+func (m *HTreeMapExternal[K, V]) StateID() uint64                    { return m.inner.id }
 func (m *HTreeMapExternal[K, V]) SharesStateWith(o *HTreeMapExternal[K, V]) bool {
 	return m.inner == o.inner
 }

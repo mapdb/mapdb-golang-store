@@ -271,7 +271,7 @@ func TestListPositionalShift(t *testing.T) {
 	// bounds
 	mustPanicMisuse(t, func() { l.Get(l.Len()) })
 	mustPanicMisuse(t, func() { l.AddAt(-1, 0) })
-	mustPanicMisuse(t, func() { l.AddAt(l.Len() + 1, 0) })
+	mustPanicMisuse(t, func() { l.AddAt(l.Len()+1, 0) })
 	mustPanicMisuse(t, func() { l.RemoveAt(l.Len()) })
 }
 

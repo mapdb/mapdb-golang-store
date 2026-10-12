@@ -111,10 +111,26 @@ func OpenIndexTreeList[T any](s store.Store, headerRecid store.Recid,
 // HeaderRecid is the recid of the header record; persist to reopen.
 func (l *IndexTreeList[T]) HeaderRecid() store.Recid { return l.headerRecid }
 
-func (l *IndexTreeList[T]) lockRead()    { if l.threadSafe { l.lock.RLock() } }
-func (l *IndexTreeList[T]) unlockRead()  { if l.threadSafe { l.lock.RUnlock() } }
-func (l *IndexTreeList[T]) lockWrite()   { if l.threadSafe { l.lock.Lock() } }
-func (l *IndexTreeList[T]) unlockWrite() { if l.threadSafe { l.lock.Unlock() } }
+func (l *IndexTreeList[T]) lockRead() {
+	if l.threadSafe {
+		l.lock.RLock()
+	}
+}
+func (l *IndexTreeList[T]) unlockRead() {
+	if l.threadSafe {
+		l.lock.RUnlock()
+	}
+}
+func (l *IndexTreeList[T]) lockWrite() {
+	if l.threadSafe {
+		l.lock.Lock()
+	}
+}
+func (l *IndexTreeList[T]) unlockWrite() {
+	if l.threadSafe {
+		l.lock.Unlock()
+	}
+}
 
 func (l *IndexTreeList[T]) sizeRaw() int {
 	n, _ := store.Get(l.st, l.counterRecid, ser.Long)
@@ -217,24 +233,33 @@ func (l *IndexTreeList[T]) ToSlice() []T {
 }
 
 // All iterates elements in positional order; each position resolves
-// under the read lock, so concurrent structural mutation is safe but
-// weakly consistent (a shifted element may be re-yielded or skipped).
+// under the read lock, released before each yield, so concurrent
+// structural mutation (including from the loop body) is safe but weakly
+// consistent (a shifted element may be re-yielded or skipped).
 func (l *IndexTreeList[T]) All() iter.Seq[T] {
 	return func(yield func(T) bool) {
-		l.lockRead()
-		defer l.unlockRead()
-		size := l.sizeRaw()
-		for i := 0; i < size; i++ {
-			recid := l.treeGet(int64(i))
-			var v T
-			if recid != 0 {
-				v, _ = store.Get(l.st, uint64(recid), l.elemSer)
-			}
-			if !yield(v) {
+		for i := 0; ; i++ {
+			v, ok := l.elementAt(i)
+			if !ok || !yield(v) {
 				return
 			}
 		}
 	}
+}
+
+// elementAt reads position i under the read lock, released before the
+// caller yields (no lock is ever held across user code). ok=false past
+// the current end.
+func (l *IndexTreeList[T]) elementAt(i int) (v T, ok bool) {
+	l.lockRead()
+	defer l.unlockRead()
+	if i >= l.sizeRaw() {
+		return v, false
+	}
+	if recid := l.treeGet(int64(i)); recid != 0 {
+		v, _ = store.Get(l.st, uint64(recid), l.elemSer)
+	}
+	return v, true
 }
 
 // ForEach visits elements in positional order.

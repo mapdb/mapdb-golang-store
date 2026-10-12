@@ -53,8 +53,8 @@ func keyInRange(key int64) bool { return key >= 0 && key <= MaxKey }
 // packInt dirShift, packInt levels, raw long defaultValue, packLong
 // rootRecid, packLong counterRecid).
 type llHeader struct {
-	dirShift, levels       int32
-	defaultValue           int64
+	dirShift, levels        int32
+	defaultValue            int64
 	rootRecid, counterRecid uint64
 }
 
@@ -85,12 +85,12 @@ func (llHeaderSer) Deserialize(r *bin.Reader, size int) llHeader {
 	return h
 }
 
-func (llHeaderSer) FixedSize() int                    { return -1 }
-func (llHeaderSer) SizeHint() int                     { return 34 }
-func (llHeaderSer) Compare(a, b llHeader) int         { panic(misuseInternal()) }
-func (llHeaderSer) Equals(a, b llHeader) bool         { panic(misuseInternal()) }
-func (llHeaderSer) NaturalOrder() bool                { return false }
-func (llHeaderSer) EqualsBySerializedBytes() bool     { return true }
+func (llHeaderSer) FixedSize() int                { return -1 }
+func (llHeaderSer) SizeHint() int                 { return 34 }
+func (llHeaderSer) Compare(a, b llHeader) int     { panic(misuseInternal()) }
+func (llHeaderSer) Equals(a, b llHeader) bool     { panic(misuseInternal()) }
+func (llHeaderSer) NaturalOrder() bool            { return false }
+func (llHeaderSer) EqualsBySerializedBytes() bool { return true }
 
 func misuseInternal() error {
 	return mapdb5.NewMisuse("indextree header codec is record-internal, not orderable")
@@ -182,10 +182,26 @@ func (m *IndexTreeLongLongMap) HeaderRecid() store.Recid { return m.headerRecid 
 // DefaultValue is what Get returns for an absent key.
 func (m *IndexTreeLongLongMap) DefaultValue() int64 { return m.defaultValue }
 
-func (m *IndexTreeLongLongMap) lockRead()    { if m.threadSafe { m.lock.RLock() } }
-func (m *IndexTreeLongLongMap) unlockRead()  { if m.threadSafe { m.lock.RUnlock() } }
-func (m *IndexTreeLongLongMap) lockWrite()   { if m.threadSafe { m.lock.Lock() } }
-func (m *IndexTreeLongLongMap) unlockWrite() { if m.threadSafe { m.lock.Unlock() } }
+func (m *IndexTreeLongLongMap) lockRead() {
+	if m.threadSafe {
+		m.lock.RLock()
+	}
+}
+func (m *IndexTreeLongLongMap) unlockRead() {
+	if m.threadSafe {
+		m.lock.RUnlock()
+	}
+}
+func (m *IndexTreeLongLongMap) lockWrite() {
+	if m.threadSafe {
+		m.lock.Lock()
+	}
+}
+func (m *IndexTreeLongLongMap) unlockWrite() {
+	if m.threadSafe {
+		m.lock.Unlock()
+	}
+}
 
 func (m *IndexTreeLongLongMap) treeGet(index int64) int64 {
 	return htree.TreeGet(DirShift, m.rootRecid, m.st, Levels-1, index)
@@ -258,39 +274,37 @@ func (m *IndexTreeLongLongMap) IsEmpty() bool {
 // ForEach visits every (key, value) entry, unordered, under the read
 // lock (Java forEach).
 func (m *IndexTreeLongLongMap) ForEach(f func(key, value int64)) {
+	for k, v := range m.All() {
+		f(k, v)
+	}
+}
+
+// All is the unordered entry iterator. Entries are snapshotted under the
+// read lock and yielded after it is released, so the loop body may mutate
+// the map and a suspended iter.Pull2 never blocks writers; weakly
+// consistent with respect to concurrent mutation.
+func (m *IndexTreeLongLongMap) All() func(func(int64, int64) bool) {
+	return func(yield func(int64, int64) bool) {
+		keys, vals := m.snapshot()
+		for i := range keys {
+			if !yield(keys[i], vals[i]) {
+				return
+			}
+		}
+	}
+}
+
+// snapshot collects every entry under the read lock.
+func (m *IndexTreeLongLongMap) snapshot() (keys, vals []int64) {
 	m.lockRead()
 	defer m.unlockRead()
 	htree.TreeFold(m.rootRecid, m.st, Levels-1,
 		func(index, vrecid int64) {
-			f(index, m.st.Read(uint64(vrecid), readLong))
+			keys = append(keys, index)
+			vals = append(vals, m.st.Read(uint64(vrecid), readLong))
 		})
+	return keys, vals
 }
-
-// All is the unordered entry iterator (weakly consistent with respect to
-// concurrent mutation, matching DirTree's traversal).
-func (m *IndexTreeLongLongMap) All() func(func(int64, int64) bool) {
-	return func(yield func(int64, int64) bool) {
-		m.lockRead()
-		defer m.unlockRead()
-		defer func() {
-			if r := recover(); r != nil {
-				if _, stop := r.(stopFold); !stop {
-					panic(r)
-				}
-			}
-		}()
-		htree.TreeFold(m.rootRecid, m.st, Levels-1,
-			func(index, vrecid int64) {
-				if !yield(index, m.st.Read(uint64(vrecid), readLong)) {
-					panic(stopFold{})
-				}
-			})
-	}
-}
-
-// stopFold unwinds TreeFold early when the consumer stops; the iterator
-// recovers it before returning to the range loop.
-type stopFold struct{}
 
 func (m *IndexTreeLongLongMap) incrementSize(delta int64) {
 	n, _ := store.Get(m.st, m.counterRecid, ser.Long)

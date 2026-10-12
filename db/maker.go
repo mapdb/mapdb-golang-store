@@ -184,28 +184,28 @@ func (m *DBMaker) Make() (*DB, error) {
 	case backendHeap:
 		s := store.NewStoreOnHeap(true)
 		if m.readOnly {
-			st = store.NewReadOnly(s)
+			st = readOnlyStore(s)
 		} else {
 			st = s
 		}
 	case backendByteArray:
 		s := store.NewStoreByteArray(true)
 		if m.readOnly {
-			st = store.NewReadOnly(s)
+			st = readOnlyStore(s)
 		} else {
 			st = s
 		}
 	case backendMemoryDirect:
 		s := store.NewStoreDirectHeap(true)
 		if m.readOnly {
-			st = store.NewReadOnly(s)
+			st = readOnlyStore(s)
 		} else {
 			st = s
 		}
 	case backendAppendOnly:
 		s := store.NewStoreAppendOnly()
 		if m.readOnly {
-			st = store.NewReadOnly(s)
+			st = readOnlyStore(s)
 		} else {
 			st = s
 		}
@@ -246,7 +246,7 @@ func (m *DBMaker) Make() (*DB, error) {
 				deleteAfterOpenPath = m.path
 			}
 			if m.readOnly {
-				st = store.NewReadOnly(direct)
+				st = readOnlyStore(direct)
 			} else {
 				st = direct
 			}
@@ -298,4 +298,14 @@ func newDBErr(s store.Store, cleanup []string) (d *DB, err error) {
 // failures — removeFileIfExists preserves them).
 func removeFile(p string) error {
 	return removeFileIfExists(p)
+}
+
+// readOnlyStore wraps s as read-only, keeping the StoreDelta capability
+// when s has it (Java StoreReadOnlyWrapper implements StoreDelta), so
+// delta-backed collections such as BufferTreeMap reopen read-only.
+func readOnlyStore(s store.Store) store.Store {
+	if ds, ok := s.(store.StoreDelta); ok {
+		return store.NewReadOnlyDelta(ds)
+	}
+	return store.NewReadOnly(s)
 }

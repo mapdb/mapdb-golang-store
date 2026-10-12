@@ -284,44 +284,44 @@ func (m *HTreeMap48[K, V]) HashSeed64() int64 { return m.m.inner.hashSeed }
 // state; the 48-bit map only differs in hashing and header codec).
 func (m *HTreeMap48[K, V]) Underlying() *HTreeMap[K, V] { return m.m }
 
-func (m *HTreeMap48[K, V]) HeaderRecid() store.Recid       { return m.m.HeaderRecid() }
-func (m *HTreeMap48[K, V]) Segments() int                  { return m.m.Segments() }
-func (m *HTreeMap48[K, V]) IsClosed() bool                 { return m.m.IsClosed() }
+func (m *HTreeMap48[K, V]) HeaderRecid() store.Recid         { return m.m.HeaderRecid() }
+func (m *HTreeMap48[K, V]) Segments() int                    { return m.m.Segments() }
+func (m *HTreeMap48[K, V]) IsClosed() bool                   { return m.m.IsClosed() }
 func (m *HTreeMap48[K, V]) KeySerializer() ser.Serializer[K] { return m.m.KeySerializer() }
 func (m *HTreeMap48[K, V]) ValueSerializer() ser.Serializer[V] {
 	return m.m.ValueSerializer()
 }
-func (m *HTreeMap48[K, V]) StateID() uint64                     { return m.m.StateID() }
-func (m *HTreeMap48[K, V]) Close() error                        { return m.m.Close() }
-func (m *HTreeMap48[K, V]) CloseHandle()                        { m.m.CloseHandle() }
-func (m *HTreeMap48[K, V]) Get(key K) (V, bool)                 { return m.m.Get(key) }
-func (m *HTreeMap48[K, V]) ContainsKey(key K) bool              { return m.m.ContainsKey(key) }
-func (m *HTreeMap48[K, V]) Put(key K, value V) (V, bool)        { return m.m.Put(key, value) }
+func (m *HTreeMap48[K, V]) StateID() uint64              { return m.m.StateID() }
+func (m *HTreeMap48[K, V]) Close() error                 { return m.m.Close() }
+func (m *HTreeMap48[K, V]) CloseHandle()                 { m.m.CloseHandle() }
+func (m *HTreeMap48[K, V]) Get(key K) (V, bool)          { return m.m.Get(key) }
+func (m *HTreeMap48[K, V]) ContainsKey(key K) bool       { return m.m.ContainsKey(key) }
+func (m *HTreeMap48[K, V]) Put(key K, value V) (V, bool) { return m.m.Put(key, value) }
 func (m *HTreeMap48[K, V]) PutIfAbsent(key K, value V) (V, bool) {
 	return m.m.PutIfAbsent(key, value)
 }
-func (m *HTreeMap48[K, V]) PutOnly(key K, value V)              { m.m.PutOnly(key, value) }
-func (m *HTreeMap48[K, V]) Remove(key K) (V, bool)              { return m.m.Remove(key) }
+func (m *HTreeMap48[K, V]) PutOnly(key K, value V) { m.m.PutOnly(key, value) }
+func (m *HTreeMap48[K, V]) Remove(key K) (V, bool) { return m.m.Remove(key) }
 func (m *HTreeMap48[K, V]) RemoveIfEquals(key K, value V) bool {
 	return m.m.RemoveIfEquals(key, value)
 }
-func (m *HTreeMap48[K, V]) RemoveOnly(key K) bool               { return m.m.RemoveOnly(key) }
+func (m *HTreeMap48[K, V]) RemoveOnly(key K) bool { return m.m.RemoveOnly(key) }
 func (m *HTreeMap48[K, V]) Replace(key K, value V) (V, bool) {
 	return m.m.Replace(key, value)
 }
 func (m *HTreeMap48[K, V]) ReplaceIfEquals(key K, oldValue, newValue V) bool {
 	return m.m.ReplaceIfEquals(key, oldValue, newValue)
 }
-func (m *HTreeMap48[K, V]) Clear()                         { m.m.Clear() }
-func (m *HTreeMap48[K, V]) ClearWithoutNotification()      { m.m.ClearWithoutNotification() }
-func (m *HTreeMap48[K, V]) ClearWithExpire()               { m.m.ClearWithExpire() }
-func (m *HTreeMap48[K, V]) IsEmpty() bool                  { return m.m.IsEmpty() }
-func (m *HTreeMap48[K, V]) Len() int                       { return m.m.Len() }
-func (m *HTreeMap48[K, V]) LenLong() int64                 { return m.m.LenLong() }
-func (m *HTreeMap48[K, V]) All() iter.Seq2[K, V]           { return m.m.All() }
-func (m *HTreeMap48[K, V]) Keys() iter.Seq[K]              { return m.m.Keys() }
-func (m *HTreeMap48[K, V]) Values() iter.Seq[V]            { return m.m.Values() }
-func (m *HTreeMap48[K, V]) ForEach(f func(K, V))           { m.m.ForEach(f) }
+func (m *HTreeMap48[K, V]) Clear()                            { m.m.Clear() }
+func (m *HTreeMap48[K, V]) ClearWithoutNotification()         { m.m.ClearWithoutNotification() }
+func (m *HTreeMap48[K, V]) ClearWithExpire()                  { m.m.ClearWithExpire() }
+func (m *HTreeMap48[K, V]) IsEmpty() bool                     { return m.m.IsEmpty() }
+func (m *HTreeMap48[K, V]) Len() int                          { return m.m.Len() }
+func (m *HTreeMap48[K, V]) LenLong() int64                    { return m.m.LenLong() }
+func (m *HTreeMap48[K, V]) All() iter.Seq2[K, V]              { return m.m.All() }
+func (m *HTreeMap48[K, V]) Keys() iter.Seq[K]                 { return m.m.Keys() }
+func (m *HTreeMap48[K, V]) Values() iter.Seq[V]               { return m.m.Values() }
+func (m *HTreeMap48[K, V]) ForEach(f func(K, V))              { m.m.ForEach(f) }
 func (m *HTreeMap48[K, V]) Segments2(n int) []iter.Seq2[K, V] { return m.m.Segments2(n) }
 func (m *HTreeMap48[K, V]) ModificationListenerAdd(l mapdb5.MapModificationListener[K, V]) {
 	m.m.ModificationListenerAdd(l)

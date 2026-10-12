@@ -470,7 +470,10 @@ func TestHTreeCloseInvalidates(t *testing.T) {
 		func() { m.Put(2, 2) },
 		func() { m.Get(1) },
 		func() { m.Remove(1) },
-		func() { for range m.All() {} },
+		func() {
+			for range m.All() {
+			}
+		},
 		func() { m.Clear() },
 	} {
 		func() {

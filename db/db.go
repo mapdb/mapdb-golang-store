@@ -161,9 +161,14 @@ func (d *DB) saveCatalog(catalog NameCatalog) {
 // drain window is open. Caller holds the admin lock.
 func (d *DB) checkNotDraining() {
 	if d.draining {
-		panic(mapdb5.New(mapdb5.KindWrongConfiguration,
-			"DB is rolling back — named-object ops are rejected during handle retirement; retry after Rollback returns"))
+		d.checkNotDrainingPanic()
 	}
+}
+
+// checkNotDrainingPanic raises the drain-window rejection.
+func (d *DB) checkNotDrainingPanic() {
+	panic(mapdb5.New(mapdb5.KindWrongConfiguration,
+		"DB is rolling back — named-object ops are rejected during handle retirement; retry after Rollback returns"))
 }
 
 // publishCatalog stages a catalog mutation on a COPY, persists it FIRST,
@@ -265,6 +270,15 @@ func (d *DB) Rollback() {
 		d.adminMu.Unlock()
 		panic(mapdb5.New(mapdb5.KindUnsupported, "rollback on a non-transactional store"))
 	}
+	// One rollback owns the drain window at a time: an overlapping call
+	// must not clear another's draining flag and rewind while that call's
+	// retirement is still in flight (handles published in between would
+	// survive the rewind). It fails fast like every other named-object op
+	// during the window — blocking could deadlock a listener re-entry.
+	if d.draining {
+		d.adminMu.Unlock()
+		d.checkNotDrainingPanic()
+	}
 	// Retire + drop all cached handles BEFORE rewinding (Java
 	// closeRuntimeHandle on every instance, run before rollback): a stale
 	// atomic could otherwise write a rewound/reused recid, a queue's
@@ -347,11 +361,22 @@ func (d *DB) Rename(old, newName string) {
 // commit. A teardown failure leaves an unlinked leak, never a catalog
 // pointer to destroyed data.
 func (d *DB) Delete(name string) bool {
+	found, atomicRecid, detached := d.deleteUnlink(name)
+	if !found {
+		return false
+	}
+	d.deleteTeardown(detached, atomicRecid)
+	return true
+}
+
+// deleteUnlink is Delete's locked phase: the deferred unlock releases the
+// admin lock on every exit, a catalog-save panic included.
+func (d *DB) deleteUnlink(name string) (found bool, atomicRecid uint64, detached *cacheEntry) {
 	d.lockAdmin()
+	defer d.adminMu.Unlock()
 	storedType, ok := d.catalog[name+"#type"]
 	if !ok {
-		d.adminMu.Unlock()
-		return false
+		return false, 0, nil
 	}
 	// Capture an atomic's single record recid BEFORE unlinking (params
 	// vanish on strip). ONLY atomics free a record by recid here — a
@@ -359,7 +384,6 @@ func (d *DB) Delete(name string) bool {
 	// off the catalog: a still-live handle keeps using them and the store
 	// would hand the recid to a new object. Collections free their
 	// ENTRY/NODE records through the cached handle's teardown instead.
-	var atomicRecid uint64
 	if isAtomicType(storedType) {
 		atomicRecid = parseRecidOr0(d.catalog[name+"#recid"])
 	}
@@ -385,12 +409,16 @@ func (d *DB) Delete(name string) bool {
 	// in-flight ops whose listeners may re-enter the lock — a circular
 	// wait if it stayed held. The name is already unlinked from the
 	// catalog, so concurrent opens of it cannot observe the window.
-	var detached *cacheEntry
 	if e, ok := d.cache[name]; ok {
 		delete(d.cache, name)
 		detached = e
 	}
-	d.adminMu.Unlock()
+	return true, atomicRecid, detached
+}
+
+// deleteTeardown is Delete's unlocked phase: retire + free the detached
+// handle's records, then (re-locked) free an atomic's single record.
+func (d *DB) deleteTeardown(detached *cacheEntry, atomicRecid uint64) {
 	if detached != nil {
 		run := func(f func()) {
 			if f != nil {
@@ -412,7 +440,6 @@ func (d *DB) Delete(name string) bool {
 	if atomicRecid != 0 {
 		func() { defer func() { _ = recover() }(); store.Delete(d.st, atomicRecid, catalogSer{}) }()
 	}
-	return true
 }
 
 // ============================ cache primitives ============================
@@ -711,6 +738,59 @@ func validateCatalog(cat NameCatalog) {
 			if parseDecimal(fields["leafHeadroom"], name+" leafHeadroom") > 1<<31-1 {
 				panic(mapdb5.NewCorruption("catalog '" + name + "' leafHeadroom out of range"))
 			}
+		case "HashMap", "HashSet", "HashMap48", "HashSet48":
+			wide := ty == "HashMap48" || ty == "HashSet48"
+			hasherField := "hasher"
+			optional := []string{"concShift", "dirShift", "levels"}
+			if wide {
+				hasherField = "hasher64"
+			} else {
+				optional = append(optional, "kind", "counterRecid")
+			}
+			required := []string{"headerRecid", hasherField}
+			desc := map[string]bool{"serializer": false}
+			if ty == "HashMap" || ty == "HashMap48" {
+				required = append(required, "keySerializer", "valueSerializer")
+				desc = map[string]bool{"keySerializer": false, "valueSerializer": false}
+			} else {
+				required = append(required, "serializer")
+			}
+			check(required, optional, desc)
+			recidGE1("headerRecid")
+			counterOK("counterRecid")
+			for _, f := range []string{"concShift", "dirShift", "levels"} {
+				if v, ok := fields[f]; ok && parseDecimal(v, name+" "+f) > 64 {
+					panic(mapdb5.NewCorruption("catalog '" + name + "' " + f + " out of range"))
+				}
+			}
+			valid := validHasherMarker
+			if wide {
+				valid = validHasher64Marker
+			}
+			if !valid(fields[hasherField]) {
+				panic(mapdb5.NewCorruption("catalog '" + name + "' has an unknown hasher marker '" + fields[hasherField] + "'"))
+			}
+			if k, ok := fields["kind"]; ok {
+				allowed := k == "PLAIN" || k == "CACHE" || (ty == "HashMap" && k == "EXTERNAL")
+				if !allowed {
+					panic(mapdb5.NewCorruption("catalog '" + name + "' has an unknown kind '" + k + "'"))
+				}
+			}
+		case "SortedTableMap":
+			check(
+				[]string{"keySerializer", "valueSerializer", "headerRecid", "entriesPerPage"},
+				nil,
+				map[string]bool{"keySerializer": true, "valueSerializer": true})
+			recidGE1("headerRecid")
+			if e := parseDecimal(fields["entriesPerPage"], name+" entriesPerPage"); e < 1 || e > 1<<31-1 {
+				panic(mapdb5.NewCorruption("catalog '" + name + "' entriesPerPage out of range"))
+			}
+		case "IndexTreeList":
+			check([]string{"headerRecid", "serializer"}, nil, map[string]bool{"serializer": false})
+			recidGE1("headerRecid")
+		case "IndexTreeLongLongMap":
+			check([]string{"headerRecid"}, nil, nil)
+			recidGE1("headerRecid")
 		case "AtomicLong", "AtomicInteger", "AtomicBoolean", "AtomicString":
 			check([]string{"recid"}, nil, nil)
 			recidGE1("recid")

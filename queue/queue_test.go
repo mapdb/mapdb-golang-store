@@ -548,9 +548,9 @@ func (s *armedPanicSer) Serialize(w *bin.Writer, v string) {
 func (s *armedPanicSer) Deserialize(r *bin.Reader, size int) string {
 	return s.inner.Deserialize(r, size)
 }
-func (s *armedPanicSer) FixedSize() int                  { return -1 }
-func (s *armedPanicSer) SizeHint() int                   { return s.inner.SizeHint() }
-func (s *armedPanicSer) Compare(a, b string) int         { return s.inner.Compare(a, b) }
-func (s *armedPanicSer) Equals(a, b string) bool         { return s.inner.Equals(a, b) }
-func (s *armedPanicSer) NaturalOrder() bool              { return true }
-func (s *armedPanicSer) EqualsBySerializedBytes() bool   { return true }
+func (s *armedPanicSer) FixedSize() int                { return -1 }
+func (s *armedPanicSer) SizeHint() int                 { return s.inner.SizeHint() }
+func (s *armedPanicSer) Compare(a, b string) int       { return s.inner.Compare(a, b) }
+func (s *armedPanicSer) Equals(a, b string) bool       { return s.inner.Equals(a, b) }
+func (s *armedPanicSer) NaturalOrder() bool            { return true }
+func (s *armedPanicSer) EqualsBySerializedBytes() bool { return true }
