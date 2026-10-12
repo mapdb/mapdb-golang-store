@@ -1,6 +1,69 @@
 # mapdb-golang-store — MapDB5 store engine, Go port
 
-**Nothing is implemented.** There is no Go source, no `go.mod`, no `go.work`.
+**Status: early milestones.** `go.mod` at repo root (`module github.com/mapdb/mapdb5-go`).
+
+- **M0 (done):** `bin` package — `Writer`/`Reader`, big-endian scalars, mapdb
+  packed varints (7 bits/byte, MSB-first, `0x80` terminator), writer pooling;
+  root `DBError` hierarchy; `store` parity checksums (p1/p4/p16). Golden
+  vectors + race tests.
+- **M1 (done):** `ser` package — `Serializer[A]`/`AnySerializer` (erased
+  store boundary), built-in scalar/array/string/big-number/compression
+  serializers, `GroupFormat[K]` family (fixed-stride, delta, blob+offsets,
+  front-coded prefix, object-array, tuple, columnar), `Value` sum type,
+  UTF-16 string order.
+- **M2 (done):** `store` package — `Store`/`StoreDelta`/`StoreTx` interfaces,
+  erased-boundary validation, `StoreOnHeap`, `StoreByteArray`,
+  `ReadOnlyWrapper`, lease table, generic store TCK + delta TCK.
+- **M3 (done):** `StoreDirect` — 1 MiB paged volume (heap + file), parity
+  index values, free-list long stacks, linked oversize records, verify,
+  compact, `wal*` replay hooks for the WAL's inner store.
+- **M4 (done):** `StoreWAL` — v3 segment-set WAL (`MDBS.WAL`,
+  `<base>.wal.<16 hex>`), OFD store lock (`<base>.lock`), two-pass recovery
+  with clean-mark adjudication + torn-tail handling, two-pass section writer
+  with domain-bound CRCs, incremental cleaner + checkpoint, delete-on-close,
+  `walIO` fault-injection seam. Full store TCK incl. delta.
+- **M5 (done):** `btree` package — persistent B-link tree (`BTreeMap`):
+  Java-compatible node wire format (packed header, key group, child recids /
+  value group + fence), per-recid sharded lock table with reentrancy
+  tripwire, Lehman-Yao splits (right sibling first, dual root-grow gate),
+  O(1) size counter, external-value mode with reclamation read barrier,
+  tx-aware left-edge refresh + poison, weakly consistent ascending and
+  descending bounded iterators, full navigable surface (floor/ceiling/
+  lower/higher, head/tail/sub, rank/select, poll first/last), `TreePump`
+  bulk builder (`CreateFromSorted`, `pump.ErrNotSorted`), structural
+  `Verify`, open lease on the root pointer. Satisfies the sibling
+  collections `MutableMap` interface.
+- **spec2/W3 (done):** `queue` package — `QueueLong` (persistent FIFO of
+  `(timestamp,value)` u64 pairs, three-recid reopenable, O(1) remove/bump,
+  takeUntil/forEach with re-entry tripwire, byte-compatible node +
+  pointer records) and `PersistentBlockingQueue` (`PBQ[V]` — FIFO/LIFO/
+  circular modes, header + node records byte-compatible, blocking
+  `Take`/`Put` plus timed variants via a channel-backed condition
+  variable, close-handle wakeup, verify/purge).
+- **spec2/W2 (done):** `BTreeMap` modification listeners — sync + deferred
+  `MapModificationListener` lists, copy-on-write registration, panic-safe
+  delivery, split/counter/listener failure precedence, external-barrier
+  re-entry tripwire, per-listener value isolation, value-comparability
+  identity domain.
+- **spec2/W4 (done):** `db` package — `DB` facade with the Java `MDBC` v1
+  name catalog, `DBMaker` backend builder (heap/bytearray/direct/file/WAL,
+  read-only, recovery limits, delete-on-close), typed makers (TreeMap,
+  TreeSet, atomics Var/Long/Integer/Boolean/String, QueueLong, blocking
+  queues), navigable set views with orientation-aware bounds, `Bind`
+  secondary views (indexes, histogram, inverse, filtered maps, key/value
+  projections), serializer-descriptor catalog checks, same-live-instance
+  cache.
+- **M6a (done):** `StoreAppendOnly` — in-memory append-only StoreDelta
+  (16-aligned extents in 1 MiB pages, lock-free atomic readers, serialized
+  writers, slice-retiring compaction); `db.MemoryAppendOnlyDB()`.
+- **M7 (done):** `mdhash` (Java-compatible seeded hashers), `htree` —
+  DirTree, `HTreeMap` / `HTreeMap48` / `HTreeMapExternal`, `HTreePump`,
+  `HTreeCache` (TTL / max-size / store-size eviction, Java ExpireQueue
+  layout, overflow tier, eviction listener); `indextree`
+  (`IndexTreeLongLongMap`, `IndexTreeList`); `sortedtable`
+  (`SortedTableMap`).
+- **Next:** M6b BufferedPageFormat + BufferTreeMap (in progress); M8
+  maintenance + benchmarks; W5 `PORTING-GAPS.md` + final review.
 
 The port specification — 7 codex-reviewed draft documents (2026-07-12) covering
 overview, io/serialization, store, btree, htree, testing and decisions — lives in
