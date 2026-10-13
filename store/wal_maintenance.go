@@ -15,38 +15,40 @@ import (
 // fallback (P7), so a store with no maintenance goroutine is still bounded.
 // Close shuts the owned executor down.
 func (s *StoreWAL) StartMaintenance() *MaintenanceExecutor {
-	s.maintMu.Lock()
-	defer s.maintMu.Unlock()
+	m := &s.maint
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	s.checkMaintainable()
-	if s.maintenance == nil {
-		s.maintenance = NewMaintenanceExecutor("wal")
-		s.ownsMaintenance = true
-		s.cleanerHandle = s.maintenance.Register(&walCleanerTask{store: s})
+	if m.ex == nil {
+		m.ex = NewMaintenanceExecutor("wal")
+		m.owns = true
+		m.handle = m.ex.Register(&walCleanerTask{store: s})
 	}
-	return s.maintenance
+	return m.ex
 }
 
 // AttachMaintenance registers the cleaner task into an externally-owned
 // executor; Close cancels the task but does not shut the executor down.
 func (s *StoreWAL) AttachMaintenance(executor *MaintenanceExecutor) {
-	s.maintMu.Lock()
-	defer s.maintMu.Unlock()
+	m := &s.maint
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	s.checkMaintainable()
 	if executor == nil {
 		panic(mapdb5.NewMisuse("maintenance executor is nil"))
 	}
-	if s.cleanerHandle != nil {
+	if m.handle != nil {
 		panic(mapdb5.NewMisuse("maintenance already attached"))
 	}
-	s.maintenance = executor
-	s.ownsMaintenance = false
-	s.cleanerHandle = executor.Register(&walCleanerTask{store: s})
+	m.ex = executor
+	m.owns = false
+	m.handle = executor.Register(&walCleanerTask{store: s})
 }
 
 // checkMaintainable is Java's checkClosed + checkWritable +
-// maintenanceShutdown guard; maintMu held.
+// maintenanceShutdown guard; maint.mu held.
 func (s *StoreWAL) checkMaintainable() {
-	if s.closed.Load() || s.maintenanceShutdown {
+	if s.closed.Load() || s.maint.shutdown {
 		panic(mapdb5.New(mapdb5.KindClosed, "store closed"))
 	}
 	if s.st.readOnly {
@@ -55,36 +57,9 @@ func (s *StoreWAL) checkMaintainable() {
 }
 
 // stopMaintenanceForClose stops the owned executor (or cancels the attached
-// task) BEFORE Close takes the WAL write lock.
-func (s *StoreWAL) stopMaintenanceForClose() {
-	s.maintMu.Lock()
-	if s.maintenanceShutdown {
-		s.maintMu.Unlock()
-		return // idempotent
-	}
-	if s.ownsMaintenance && s.maintenance != nil {
-		ex := s.maintenance
-		s.maintMu.Unlock()
-		ex.checkNotOwnTask() // a rejected Close must leave the owner intact
-		s.maintMu.Lock()
-		if s.maintenanceShutdown {
-			s.maintMu.Unlock()
-			return
-		}
-	}
-	s.maintenanceShutdown = true // refuses any start/attach racing this close
-	ex, owns, h := s.maintenance, s.ownsMaintenance, s.cleanerHandle
-	s.maintenance, s.cleanerHandle = nil, nil
-	s.maintMu.Unlock() // released before the join: the task never takes maintMu, but Start/Attach callers must not wait on a join
-	if ex == nil {
-		return
-	}
-	if owns {
-		ex.Shutdown(true)
-	} else if h != nil {
-		h.Cancel()
-	}
-}
+// task) BEFORE Close takes the WAL write lock; concurrent closers all wait
+// for it (maintOwner.stopForClose).
+func (s *StoreWAL) stopMaintenanceForClose() { s.maint.stopForClose(nil) }
 
 // maintenanceCleanStep is one budgeted cleaning tick, called by the cleaner
 // task off the executor goroutine. Returns the bytes it wrote, or -1 when

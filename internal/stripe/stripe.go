@@ -8,6 +8,7 @@ package stripe
 
 import (
 	"sync"
+	"unsafe"
 
 	"github.com/mapdb/mapdb5-go/internal/handle"
 )
@@ -17,7 +18,7 @@ const Stripes = 64
 
 type padded struct {
 	mu sync.RWMutex
-	_  [64 - 24]byte // sync.RWMutex is 24 bytes; keep each on its own 64-byte line
+	_  [64 - unsafe.Sizeof(sync.RWMutex{})%64]byte // each on its own 64-byte line
 }
 
 // RWMutex is a striped reader/writer lock. The zero value is unlocked.
@@ -61,5 +62,5 @@ func (m *RWMutex) Unlock() {
 // otherwise false-share.
 type PaddedRWMutex struct {
 	sync.RWMutex
-	_ [64 - 24]byte
+	_ [64 - unsafe.Sizeof(sync.RWMutex{})%64]byte
 }

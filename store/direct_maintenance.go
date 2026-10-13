@@ -1,7 +1,6 @@
 package store
 
 import (
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -12,13 +11,9 @@ import (
 // (R6; disabled by default). Guarded by mu (Java: synchronized(this));
 // active is the lock-free fast path for the churn signal.
 type directMaintenance struct {
-	mu       sync.Mutex
-	ex       *MaintenanceExecutor
-	owns     bool
-	handle   MaintenanceHandle
-	task     *directCompactionTask
-	shutdown bool // refuses start/attach racing Close
-	active   atomic.Bool
+	maintOwner
+	task   *directCompactionTask // guarded by mu
+	active atomic.Bool
 }
 
 // StartMaintenance enables background maintenance for this store, creating
@@ -85,40 +80,17 @@ func (s *StoreDirect) signalCompactionChurn() {
 	}
 }
 
-// stopMaintenanceForClose is Close's first step: snapshot the fields, then
-// (owned) shut the executor down and join it — letting an in-flight
-// bounded CompactStep finish and release the commit lock — or (attached)
-// just cancel the task. Done BEFORE Close takes the commit lock.
+// stopMaintenanceForClose is Close's first step: (owned) shut the
+// executor down and join it — letting an in-flight bounded CompactStep
+// finish and release the commit lock — or (attached) cancel the task.
+// Done BEFORE Close takes the commit lock; concurrent closers all wait for
+// it (maintOwner.stopForClose).
 func (s *StoreDirect) stopMaintenanceForClose() {
 	m := &s.maint
-	m.mu.Lock()
-	if m.shutdown {
-		m.mu.Unlock()
-		return // idempotent; a concurrent Close already handled it
-	}
-	if m.owns && m.ex != nil {
-		ex := m.ex
-		m.mu.Unlock()
-		ex.checkNotOwnTask() // a rejected Close must leave the owner intact
-		m.mu.Lock()
-		if m.shutdown {
-			m.mu.Unlock()
-			return
-		}
-	}
-	m.shutdown = true
-	ex, owns, h := m.ex, m.owns, m.handle
-	m.handle, m.task, m.ex = nil, nil, nil
-	m.active.Store(false)
-	m.mu.Unlock()
-	if ex == nil {
-		return
-	}
-	if owns {
-		ex.Shutdown(true)
-	} else if h != nil {
-		h.Cancel()
-	}
+	m.stopForClose(func() {
+		m.task = nil
+		m.active.Store(false)
+	})
 }
 
 // compactStepper is what the compaction task drives (StoreDirect; a test

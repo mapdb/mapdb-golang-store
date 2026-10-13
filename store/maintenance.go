@@ -414,6 +414,71 @@ func (ex *MaintenanceExecutor) checkNotOwnTask() {
 	}
 }
 
+// maintOwner is a store's maintenance ownership state (Java: the
+// synchronized maintenance fields of StoreDirect / StoreWAL), shared by
+// both stores so their Close paths cannot drift apart.
+type maintOwner struct {
+	mu       sync.Mutex
+	ex       *MaintenanceExecutor
+	owns     bool
+	handle   MaintenanceHandle
+	shutdown bool // refuses Start/Attach racing Close
+	// stopped is closed once the Close that began the shutdown finished
+	// stopping (joined the owned executor or cancelled the task); later
+	// closers wait on it so no Close returns before maintenance is gone.
+	stopped chan struct{}
+	joining *MaintenanceExecutor // the owned executor being joined, for the self-task check
+}
+
+// stopForClose is a store Close's first step, run BEFORE the store takes
+// its own locks so an in-flight task can finish and release them. The
+// first caller shuts an owned executor down (join) or cancels an attached
+// task; concurrent and later callers wait until that has completed. A call
+// from one of the owned executor's own tasks panics Misuse before changing
+// anything (it could never be joined), leaving a later Close able to finish.
+// onBegin runs under mu when the shutdown begins (store-specific fields).
+func (o *maintOwner) stopForClose(onBegin func()) {
+	o.mu.Lock()
+	if !o.shutdown && o.owns && o.ex != nil {
+		ex := o.ex
+		o.mu.Unlock()
+		ex.checkNotOwnTask()
+		o.mu.Lock()
+		// Start returns the existing owner and Attach rejects a held
+		// handle, so ownership cannot change in this window; only another
+		// Close can have begun the shutdown, which the next branch handles.
+	}
+	if o.shutdown {
+		ch, joining := o.stopped, o.joining
+		o.mu.Unlock()
+		if joining != nil {
+			joining.checkNotOwnTask() // waiting on its own join would hang
+		}
+		<-ch
+		return
+	}
+	o.shutdown = true
+	o.stopped = make(chan struct{})
+	ex, owns, h := o.ex, o.owns, o.handle
+	if owns {
+		o.joining = ex
+	}
+	o.ex, o.handle = nil, nil
+	if onBegin != nil {
+		onBegin()
+	}
+	o.mu.Unlock()
+	defer close(o.stopped)
+	if ex == nil {
+		return
+	}
+	if owns {
+		ex.Shutdown(true)
+	} else if h != nil {
+		h.Cancel()
+	}
+}
+
 // ---- test hooks ----
 
 func (ex *MaintenanceExecutor) testGoroutineAlive() bool {

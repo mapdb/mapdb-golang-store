@@ -170,13 +170,9 @@ type StoreWAL struct {
 	deleteOnClose atomic.Bool
 	threadSafe    bool
 
-	// optional background maintenance (R6; disabled by default). Guarded
-	// by maintMu (Java: synchronized(this)); never held with mu.
-	maintMu             sync.Mutex
-	maintenance         *MaintenanceExecutor
-	ownsMaintenance     bool
-	cleanerHandle       MaintenanceHandle
-	maintenanceShutdown bool
+	// optional background maintenance (R6; disabled by default); its
+	// mutex is never held together with mu.
+	maint maintOwner
 }
 
 // OpenStoreWAL opens the WAL store at base; its segments are

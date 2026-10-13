@@ -7,6 +7,7 @@ package handle
 
 import (
 	"sync"
+	"unsafe"
 )
 
 // Goid (goid_fast.go / goid_slow.go) identifies the calling goroutine
@@ -43,12 +44,18 @@ type Tracker struct {
 
 const trackerStripes = 64
 
-type trackerStripe struct {
+type trackerStripeFields struct {
 	mu     sync.Mutex
 	n      int                 // admitted ops on this stripe (one per goroutine)
 	active map[uint64]struct{} // goid -> admitted; lazily made
 	cond   *sync.Cond          // on mu; lazily created by Wait
-	_      [64 - 32]byte       // one stripe per 64-byte cache line
+}
+
+// trackerStripe pads the fields to one 64-byte cache line on every
+// platform (the field sizes differ between 32- and 64-bit targets).
+type trackerStripe struct {
+	trackerStripeFields
+	_ [64 - unsafe.Sizeof(trackerStripeFields{})%64]byte
 }
 
 func (t *Tracker) stripe(g uint64) *trackerStripe {
