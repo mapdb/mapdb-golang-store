@@ -428,6 +428,10 @@ type maintOwner struct {
 	// closers wait on it so no Close returns before maintenance is gone.
 	stopped chan struct{}
 	joining *MaintenanceExecutor // the owned executor being joined, for the self-task check
+	// stopper is the goroutine running the shutdown (0 when none). Its
+	// OnShutdown callbacks run on it after the join; a Close they make
+	// must not wait for the very call that is running them.
+	stopper uint64
 }
 
 // stopForClose is a store Close's first step, run BEFORE the store takes
@@ -449,8 +453,14 @@ func (o *maintOwner) stopForClose(onBegin func()) {
 		// Close can have begun the shutdown, which the next branch handles.
 	}
 	if o.shutdown {
-		ch, joining := o.stopped, o.joining
+		ch, joining, stopper := o.stopped, o.joining, o.stopper
 		o.mu.Unlock()
+		if stopper != 0 && stopper == handle.Goid() {
+			// Re-entered from an OnShutdown callback of the shutdown this
+			// goroutine is running: the executor is already joined (the
+			// callbacks run after the join), so there is nothing to wait for.
+			return
+		}
 		if joining != nil {
 			joining.checkNotOwnTask() // waiting on its own join would hang
 		}
@@ -459,6 +469,7 @@ func (o *maintOwner) stopForClose(onBegin func()) {
 	}
 	o.shutdown = true
 	o.stopped = make(chan struct{})
+	o.stopper = handle.Goid()
 	ex, owns, h := o.ex, o.owns, o.handle
 	if owns {
 		o.joining = ex
@@ -468,7 +479,12 @@ func (o *maintOwner) stopForClose(onBegin func()) {
 		onBegin()
 	}
 	o.mu.Unlock()
-	defer close(o.stopped)
+	defer func() {
+		o.mu.Lock()
+		o.stopper = 0 // goroutine identities are recycled: never outlive the call
+		o.mu.Unlock()
+		close(o.stopped)
+	}()
 	if ex == nil {
 		return
 	}
