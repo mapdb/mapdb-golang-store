@@ -9,7 +9,10 @@ import (
 )
 
 // Reader is a positioned, seekable read cursor over a byte slice. The slice
-// may be a zero-copy view into a volume slice; Readers never copy.
+// may be a zero-copy view into a volume slice or a pooled buffer the store
+// reuses for its next read; Readers never copy. Bytes obtained through
+// Slice or Subslice are therefore valid only during the Deserialize /
+// RecordRead call that received the Reader — copy (ReadBytes) to keep them.
 //
 // SetPos is unchecked (matching Java's pos(int)); the following read is what
 // bounds-checks. All read methods panic *mapdb5.DBError{Kind: DataCorruption}

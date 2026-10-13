@@ -82,7 +82,7 @@ func RunStoreGet(s store.Store, recids []store.Recid, threads int, dur time.Dura
 	return Sample{Ops: total.Load(), Elapsed: el, AllocBytes: ms1.TotalAlloc - ms0.TotalAlloc}
 }
 
-// StoreGet is one store-level read.
-func StoreGet(s store.Store, recid store.Recid) {
-	Sink.Add(uint64(s.Get(recid, longSer).(int64)))
+// StoreGet is one store-level read; callers fold the result locally.
+func StoreGet(s store.Store, recid store.Recid) uint64 {
+	return uint64(s.Get(recid, longSer).(int64))
 }

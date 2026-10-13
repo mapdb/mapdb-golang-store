@@ -211,13 +211,12 @@ func RunLoad[K, V any](build func() Map[K, V], d *Dataset[K, V], sequential bool
 }
 
 // NewOp is Op with its own cursor: a func performing one operation, for
-// testing.B loops (one per goroutine).
-func NewOp[K, V any](w string, m Map[K, V], d *Dataset[K, V]) func() {
+// testing.B loops (one per goroutine). It reports whether the op found or
+// replaced something; callers accumulate locally and publish to Sink once
+// per worker, as RunPoint does — a per-op shared atomic would add
+// cross-core contention Java's harness does not have.
+func NewOp[K, V any](w string, m Map[K, V], d *Dataset[K, V]) func() bool {
 	op := Op(w, m, d)
 	c := newCursor(d.N)
-	return func() {
-		if op(&c) {
-			Sink.Add(1)
-		}
-	}
+	return func() bool { return op(&c) }
 }

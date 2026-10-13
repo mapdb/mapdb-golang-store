@@ -219,34 +219,30 @@ func mustSubject(key string) benchkit.Subject {
 
 func runSubject[K, V any](c config, s benchkit.Subject, dt string, build func() benchkit.Map[K, V], d *benchkit.Dataset[K, V]) []row {
 	var rows []row
-	var points []string
-	for _, w := range c.workloads {
-		if benchkit.IsPoint(w) {
-			points = append(points, w)
-		}
-	}
-	// One populated map per subject×datatype serves every per-op workload
-	// and iterate (Java: Benchmark-scoped trial state; overwrites keep the
-	// size constant).
-	needPopulated := len(points) > 0 || contains(c.workloads, benchkit.Iterate)
-	var m benchkit.Map[K, V]
-	if needPopulated {
-		m = build()
+	// Every workload×threads row gets a FRESH populated map (JMH runs each
+	// benchmark method and thread count in its own fork with trial-scoped
+	// state), so no row measures what an earlier row churned. Building and
+	// populating are outside the measured region.
+	fresh := func() benchkit.Map[K, V] {
+		m := build()
 		benchkit.Populate(m, d)
-		defer m.Close()
+		return m
 	}
 	for _, w := range c.workloads {
 		switch {
 		case benchkit.IsPoint(w):
 			for _, t := range threadsFor(w, s, c) {
+				m := fresh()
 				rows = append(rows, measure(c, s.ID, dt, w, t, func() benchkit.Sample {
 					return benchkit.RunPoint(w, m, d, t, c.dur)
 				}))
+				m.Close()
 			}
 		case w == benchkit.Iterate:
 			if !s.Ordered {
 				continue
 			}
+			m := fresh()
 			rows = append(rows, measure(c, s.ID, dt, w, 1, func() benchkit.Sample {
 				smp, err := benchkit.RunIterate(m, d, c.dur)
 				if err != nil {
@@ -254,6 +250,7 @@ func runSubject[K, V any](c config, s benchkit.Subject, dt string, build func() 
 				}
 				return smp
 			}))
+			m.Close()
 		case w == benchkit.PutSequential || w == benchkit.PutRandom:
 			seq := w == benchkit.PutSequential
 			rows = append(rows, measure(c, s.ID, dt, w, 1, func() benchkit.Sample {
@@ -265,15 +262,6 @@ func runSubject[K, V any](c config, s benchkit.Subject, dt string, build func() 
 		}
 	}
 	return rows
-}
-
-func contains(xs []string, x string) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
-		}
-	}
-	return false
 }
 
 func measure(c config, subject, dt, w string, threads int, run func() benchkit.Sample) row {

@@ -383,9 +383,7 @@ func (ex *MaintenanceExecutor) runTask(t MaintenanceTask) (r MaintenanceResult, 
 // Calling it from inside a task (the executor's own goroutine) panics
 // KindMisuse instead of joining itself forever.
 func (ex *MaintenanceExecutor) Shutdown(graceful bool) {
-	if g := ex.goid.Load(); g != 0 && g == handle.Goid() {
-		panic(mapdb5.NewMisuse("maintenance executor shut down from its own task"))
-	}
+	ex.checkNotOwnTask()
 	ex.mu.Lock()
 	if ex.state.Load() != execStopped {
 		ex.state.Store(execStopping)
@@ -404,6 +402,16 @@ func (ex *MaintenanceExecutor) Shutdown(graceful bool) {
 	}
 	empty := []*maintEntry{}
 	ex.tasks.Store(&empty)
+}
+
+// checkNotOwnTask panics Misuse when called from one of this executor's
+// tasks (its own goroutine), where a join could never return. Owners call
+// it BEFORE changing any shutdown bookkeeping, so a rejected Close leaves
+// the executor reachable for a later Close.
+func (ex *MaintenanceExecutor) checkNotOwnTask() {
+	if g := ex.goid.Load(); g != 0 && g == handle.Goid() {
+		panic(mapdb5.NewMisuse("maintenance executor shut down from its own task"))
+	}
 }
 
 // ---- test hooks ----

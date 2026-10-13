@@ -5,6 +5,7 @@
 package bench
 
 import (
+	"math/rand/v2"
 	"os"
 	"strconv"
 	"testing"
@@ -50,43 +51,51 @@ func BenchmarkString(b *testing.B) {
 	}
 }
 
+// runAll gives every workload (and, for RunParallel, every -cpu value)
+// a FRESH populated map, like JMH's per-benchmark fork with trial-scoped
+// state: a workload never measures the state an earlier one churned.
 func runAll[K, V any](b *testing.B, s benchkit.Subject, build func() benchkit.Map[K, V], d *benchkit.Dataset[K, V]) {
-	var m benchkit.Map[K, V]
-	populated := func() benchkit.Map[K, V] {
-		if m == nil {
-			m = build()
-			benchkit.Populate(m, d)
-		}
+	populated := func(b *testing.B) benchkit.Map[K, V] {
+		b.StopTimer()
+		m := build()
+		benchkit.Populate(m, d)
+		b.Cleanup(m.Close)
+		b.StartTimer()
 		return m
 	}
-	defer func() {
-		if m != nil {
-			m.Close()
-		}
-	}()
 	for _, w := range benchkit.PointWorkloads {
 		b.Run(w, func(b *testing.B) {
-			mp := populated()
+			mp := populated(b)
 			b.ReportAllocs()
+			b.ResetTimer()
 			if s.MultiThread {
 				b.RunParallel(func(pb *testing.PB) {
 					op := benchkit.NewOp(w, mp, d)
+					var acc uint64
 					for pb.Next() {
-						op()
+						if op() {
+							acc++
+						}
 					}
+					benchkit.Sink.Add(acc)
 				})
 				return
 			}
 			op := benchkit.NewOp(w, mp, d)
+			var acc uint64
 			for i := 0; i < b.N; i++ {
-				op()
+				if op() {
+					acc++
+				}
 			}
+			benchkit.Sink.Add(acc)
 		})
 	}
 	if s.Ordered {
 		b.Run(benchkit.Iterate, func(b *testing.B) {
-			mp := populated()
+			mp := populated(b)
 			b.ReportAllocs()
+			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				sum, _ := mp.IterateChecksum()
 				benchkit.Sink.Add(sum)
@@ -116,14 +125,16 @@ func BenchmarkStoreGet(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			b.RunParallel(func(pb *testing.PB) {
-				i := 0
+				i := rand.IntN(len(recids))
+				var acc uint64
 				for pb.Next() {
-					benchkit.StoreGet(st, recids[i])
+					acc += benchkit.StoreGet(st, recids[i])
 					i++
 					if i == len(recids) {
 						i = 0
 					}
 				}
+				benchkit.Sink.Add(acc)
 			})
 		})
 	}

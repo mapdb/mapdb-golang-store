@@ -62,6 +62,16 @@ func (s *StoreWAL) stopMaintenanceForClose() {
 		s.maintMu.Unlock()
 		return // idempotent
 	}
+	if s.ownsMaintenance && s.maintenance != nil {
+		ex := s.maintenance
+		s.maintMu.Unlock()
+		ex.checkNotOwnTask() // a rejected Close must leave the owner intact
+		s.maintMu.Lock()
+		if s.maintenanceShutdown {
+			s.maintMu.Unlock()
+			return
+		}
+	}
 	s.maintenanceShutdown = true // refuses any start/attach racing this close
 	ex, owns, h := s.maintenance, s.ownsMaintenance, s.cleanerHandle
 	s.maintenance, s.cleanerHandle = nil, nil

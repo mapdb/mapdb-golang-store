@@ -34,7 +34,8 @@ const AppendRefused int64 = -1
 // contract: it is invoked exactly once with the committed bytes.
 type RecordRead interface {
 	// OnBytes: record is byte-resident. r is positioned at content start;
-	// size is the content length.
+	// size is the content length. r's bytes are only valid during the call
+	// (stores reuse the buffer): copy anything kept.
 	OnBytes(r *bin.Reader, size int) int64
 	// OnObject: record is object-resident (StoreOnHeap). The base helper
 	// panics Unsupported — byte-oriented actions need not implement it.

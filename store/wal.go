@@ -1529,11 +1529,14 @@ func (s *StoreWAL) Rollback() {
 }
 
 func (s *StoreWAL) Close() error {
+	// Before the closed fast path and before the write lock: a failed
+	// operation (failClosed) closes the store without stopping an owned
+	// executor, so Close must still join it; and an in-flight clean task
+	// must be able to finish.
+	s.stopMaintenanceForClose()
 	if s.closed.Load() {
 		return nil
 	}
-	// Before the write lock: lets an in-flight clean task finish.
-	s.stopMaintenanceForClose()
 	// Acquire the write lock BEFORE publishing closed, so an in-flight commit
 	// that rechecks closed under the lock observes the close atomically.
 	s.mu.Lock()

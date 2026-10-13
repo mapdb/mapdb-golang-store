@@ -96,6 +96,16 @@ func (s *StoreDirect) stopMaintenanceForClose() {
 		m.mu.Unlock()
 		return // idempotent; a concurrent Close already handled it
 	}
+	if m.owns && m.ex != nil {
+		ex := m.ex
+		m.mu.Unlock()
+		ex.checkNotOwnTask() // a rejected Close must leave the owner intact
+		m.mu.Lock()
+		if m.shutdown {
+			m.mu.Unlock()
+			return
+		}
+	}
 	m.shutdown = true
 	ex, owns, h := m.ex, m.owns, m.handle
 	m.handle, m.task, m.ex = nil, nil, nil

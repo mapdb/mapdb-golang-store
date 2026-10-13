@@ -28,7 +28,8 @@ type Serializer[A any] interface {
 	Serialize(w *bin.Writer, value A)
 	// Deserialize reads a value. size is the total bytes available, or
 	// SelfDelimit (-1) when the value is framed inside a larger record and
-	// must self-delimit (Java semantics).
+	// must self-delimit (Java semantics). r's bytes are only valid during
+	// the call (see bin.Reader): copy anything the result keeps.
 	Deserialize(r *bin.Reader, size int) A
 	// FixedSize is the serialized size in bytes, or -1 if variable.
 	FixedSize() int

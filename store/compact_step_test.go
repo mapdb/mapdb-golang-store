@@ -355,11 +355,9 @@ func TestCompactStepCrashRefusesReopen(t *testing.T) {
 // runPhasedConcurrency: each round first ALLOCATES junk and frees it on the
 // test goroutine (quiesced), then runs readers + in-place writers on other
 // goroutines while a compactor goroutine loops CompactStep until it returns
-// 0. Allocation is never concurrent with reads: StoreDirect has a
-// PRE-EXISTING Put/Get data race (readers read the fileTail header word in
-// checkReleaseExtent without the structural lock while allocateNewPageLocked
-// writes it) that -race flags with no compaction involved. In-place updates
-// never touch fileTail, so writers here race only against the compactor.
+// 0. Allocation is kept off the concurrent phase (written while a Put/Get
+// file-tail race existed — fixed since, see direct_race_test.go); in-place
+// updates never touch fileTail, so writers here race only the compactor.
 func runPhasedConcurrency(t *testing.T, s *StoreDirect, readOnly, owned map[Recid][]byte,
 	rounds int, junk func(round int), budget func(*rand.Rand) int) int {
 	t.Helper()

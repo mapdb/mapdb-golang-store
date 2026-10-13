@@ -33,6 +33,11 @@ matters to you.
   the record bytes under the lock and run the serializer / `RecordRead`
   action after releasing it, so a nested store read never deadlocks behind
   a queued `Commit` (Java's reentrant lock admits the nested read).
+- **Decoders must not keep the reader's bytes.** `StoreDirect` reads
+  into a reused buffer, so bytes taken from a `bin.Reader` (`Slice`,
+  `Subslice`) are valid only during the `Deserialize` / `RecordRead` call;
+  copy what you keep (`ReadBytes` does). Java decoders work on their own
+  buffer copy.
 - **No thread interruption.** Blocking queue `Take`/`Put` use timed variants
   and close-handle wakeup; there is no `InterruptedException` equivalent.
 
@@ -63,6 +68,40 @@ matters to you.
   returns 0 (the Java default), so an HTreeCache store-size budget is
   inactive on this store. `Verify` additionally checks that every free
   recid is in the deleted state.
+
+## Background maintenance
+
+- **Maintenance is opt-in and goroutine-based.** `StoreDirect` and
+  `StoreWAL` have `StartMaintenance` (owned executor, shut down by `Close`)
+  and `AttachMaintenance` (shared executor, `Close` only cancels the task),
+  as in Java. The executor is one goroutine instead of a daemon thread;
+  nothing else in the engine starts goroutines.
+- **Task failures include panics.** A task's returned error or recovered
+  panic is recorded (`LastTaskFailure`, `TaskFailureCount`) and the
+  executor keeps running. Java lets `Error`s stop the thread; Go has no
+  such split, and an unrecovered goroutine panic would end the process.
+- **Shutting an executor down from its own task panics `Misuse`** instead
+  of joining itself forever (the re-entrancy rule above).
+- **The WAL cleaner never defers for an LSN reservation.** Java skips a
+  tick while a delta transaction holds one; the Go `StoreWAL` has no delta
+  transactions.
+- **No DB-level maintenance option.** As in Java, the `DB` facade does not
+  start maintenance; call it on the store.
+
+## StoreDirect incremental compaction
+
+`CompactStep` / `CompactIncremental` follow Java's plan → validate →
+execute design (a planning bug degrades to a no-op; an execution failure
+poisons the store). Differences:
+
+- **Index pages keep an increasing chain.** The Go (and Rust) opener
+  rejects an index-page chain that is not strictly increasing, so a moved
+  index page goes to the lowest free page above its predecessor. Java can
+  produce a non-increasing chain, which Go would refuse to reopen.
+- Rebuilt free-space size classes are written in ascending order (Java:
+  hash order). Layout only.
+- A plain record whose stored extent fails the geometry check makes the
+  step a no-op; Java reads it unchecked.
 
 ## BTreeMap
 
