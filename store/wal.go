@@ -169,6 +169,14 @@ type StoreWAL struct {
 	structGen     atomic.Uint64
 	deleteOnClose atomic.Bool
 	threadSafe    bool
+
+	// optional background maintenance (R6; disabled by default). Guarded
+	// by maintMu (Java: synchronized(this)); never held with mu.
+	maintMu             sync.Mutex
+	maintenance         *MaintenanceExecutor
+	ownsMaintenance     bool
+	cleanerHandle       MaintenanceHandle
+	maintenanceShutdown bool
 }
 
 // OpenStoreWAL opens the WAL store at base; its segments are
@@ -950,9 +958,8 @@ func (st *walState) finishCycle() {
 
 // cleanTick is one cleaning tick: re-emit, then verify (W10), then close the
 // cycle — as far as budget allows. At most ONE cycle closes per tick.
-func (st *walState) cleanTick(budget *walBudget) {
+func (st *walState) cleanTick(budget *walBudget) (written int64) {
 	t0 := time.Now()
-	var written int64
 	var records int
 	closedCycle := false
 	for st.cleaner != nil {
@@ -1018,6 +1025,7 @@ func (st *walState) cleanTick(budget *walBudget) {
 		st.cycleWidth = nextCycleWidth(st.cycleWidth, cost, gain)
 		st.lastCycleSaturated = st.cycleSaturated
 	}
+	return written
 }
 
 // autoCleanLocked is commit's inline clean: ONE bounded slice per commit,
@@ -1521,6 +1529,11 @@ func (s *StoreWAL) Rollback() {
 }
 
 func (s *StoreWAL) Close() error {
+	if s.closed.Load() {
+		return nil
+	}
+	// Before the write lock: lets an in-flight clean task finish.
+	s.stopMaintenanceForClose()
 	// Acquire the write lock BEFORE publishing closed, so an in-flight commit
 	// that rechecks closed under the lock observes the close atomically.
 	s.mu.Lock()

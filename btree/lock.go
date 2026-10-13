@@ -1,11 +1,12 @@
 package btree
 
 import (
-	"runtime"
 	"sync"
 	"time"
 
 	mapdb5 "github.com/mapdb/mapdb5-go"
+
+	"github.com/mapdb/mapdb5-go/internal/handle"
 )
 
 // ===================== node lock table =====================
@@ -46,21 +47,9 @@ func newNodeLockTable(enabled bool) *nodeLockTable {
 	return t
 }
 
-// goid identifies the calling goroutine for the reentrancy tripwire. Parsed
-// lazily — only on the contention path (a free recid never pays for it).
-func goid() uint64 {
-	var buf [64]byte
-	n := runtime.Stack(buf[:], false)
-	// format: "goroutine 123 [running]..."
-	if n < 10 {
-		return 0
-	}
-	var id uint64
-	for i := 10; i < n && buf[i] >= '0' && buf[i] <= '9'; i++ {
-		id = id*10 + uint64(buf[i]-'0')
-	}
-	return id
-}
+// goid identifies the calling goroutine for the reentrancy tripwire
+// (handle.Goid: cheap on amd64/arm64).
+func goid() uint64 { return handle.Goid() }
 
 func (t *nodeLockTable) lock(recid uint64) {
 	if !t.enabled {

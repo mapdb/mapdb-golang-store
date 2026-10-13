@@ -1,26 +1,15 @@
 package queue
 
 import (
-	"runtime"
 	"sync"
 	"time"
+
+	"github.com/mapdb/mapdb5-go/internal/handle"
 )
 
 // qgoid identifies the calling goroutine for the callback re-entry
-// tripwire (same parsing as the btree node-lock tripwire — kept local to
-// the queue package so the packages share no internals).
-func qgoid() uint64 {
-	var buf [64]byte
-	n := runtime.Stack(buf[:], false)
-	if n < 10 {
-		return 0
-	}
-	var id uint64
-	for i := 10; i < n && buf[i] >= '0' && buf[i] <= '9'; i++ {
-		id = id*10 + uint64(buf[i]-'0')
-	}
-	return id
-}
+// tripwire (handle.Goid).
+func qgoid() uint64 { return handle.Goid() }
 
 // chCond is a channel-backed condition variable supporting both untimed
 // and timed waits (Go's sync.Cond has no timeout). Each waiter registers

@@ -16,6 +16,7 @@ import (
 
 	mapdb5 "github.com/mapdb/mapdb5-go"
 	"github.com/mapdb/mapdb5-go/bin"
+	"github.com/mapdb/mapdb5-go/internal/stripe"
 	"github.com/mapdb/mapdb5-go/ser"
 )
 
@@ -65,12 +66,14 @@ type StoreDirect struct {
 	indexPages atomic.Pointer[[]uint64] // offsets of non-zero index pages, increasing
 	threadSafe bool
 	structural sync.Mutex
-	commitLock sync.RWMutex
-	segs       [segmentCount]sync.RWMutex
+	commitLock stripe.RWMutex
+	segs       [segmentCount]stripe.PaddedRWMutex
 	closed     atomic.Bool
 	poisoned   atomic.Bool
 	freeBytes  atomic.Int64
 	lease      *LeaseTable
+	cstep      compactStepTestHooks // CompactStep test knobs (direct_compact_step.go)
+	maint      directMaintenance    // optional background compaction (direct_maintenance.go)
 }
 
 // NewStoreDirectHeap creates an anonymous heap-backed direct store.
@@ -231,11 +234,15 @@ func (s *StoreDirect) maxRecid() uint64 {
 func (s *StoreDirect) setMaxRecid(v uint64) {
 	s.vol.putU64(oMaxRecid, Parity4Set(v<<4))
 }
+
+// The file tail is read by lock-free readers (checkReleaseExtent under a
+// segment read lock) while Put/Compact update it under the structural
+// lock, so both sides access the word atomically.
 func (s *StoreDirect) fileTail() int64 {
-	return int64(Parity16Get(s.vol.getU64(oFileTail)))
+	return int64(Parity16Get(s.vol.getU64Atomic(oFileTail)))
 }
 func (s *StoreDirect) setFileTail(v int64) {
-	s.vol.putU64(oFileTail, Parity16Set(uint64(v)))
+	s.vol.putU64Atomic(oFileTail, Parity16Set(uint64(v)))
 }
 
 // ---------- recid index ----------
@@ -1144,7 +1151,7 @@ func (s *StoreDirect) Put(record any, sr ser.AnySerializer) Recid {
 // a serializer or RecordRead action may re-enter the store, and Go's
 // RWMutex — unlike Java's ReentrantReadWriteLock — blocks a nested read
 // once a Commit/Close/Compact writer is queued, which would deadlock.
-func (s *StoreDirect) readCopy(recid Recid) (b []byte, null bool) {
+func (s *StoreDirect) readCopy(recid Recid, scratch []byte) (b []byte, null bool) {
 	s.mutateEnter()
 	defer s.commitLock.RUnlock()
 	s.segRead(recid)
@@ -1157,15 +1164,37 @@ func (s *StoreDirect) readCopy(recid Recid) (b []byte, null bool) {
 		return s.linkedGet(ivval), false
 	}
 	off, used := s.readUsed(ivval)
-	return append([]byte(nil), s.vol.view(off+4, used)...), false
+	return append(scratch[:0], s.vol.view(off+4, used)...), false
+}
+
+// readScratch pools readCopy buffers. Pooling preserves the read contract:
+// a Reader's bytes may be a view into volume memory and were never valid
+// past the deserializer / RecordRead call (bin.Reader), so nothing may
+// retain them — built-in deserializers copy (ReadBytes, string(...)).
+var readScratch = sync.Pool{New: func() any { b := make([]byte, 0, 1024); return &b }}
+
+// maxPooledScratch keeps one oversize read from pinning a large buffer.
+const maxPooledScratch = 64 << 10
+
+func getScratch() *[]byte { return readScratch.Get().(*[]byte) }
+
+func putScratch(p *[]byte, used []byte) {
+	if cap(used) > maxPooledScratch {
+		return
+	}
+	*p = used[:0]
+	readScratch.Put(p)
 }
 
 func (s *StoreDirect) Get(recid Recid, sr ser.AnySerializer) any {
-	b, null := s.readCopy(recid)
+	sp := getScratch()
+	b, null := s.readCopy(recid, *sp)
 	if null {
+		readScratch.Put(sp)
 		return nil
 	}
 	v := sr.DeserializeAny(bin.NewReader(b), len(b))
+	putScratch(sp, b) // after the decode; a panicking decode just drops the buffer
 	if v != nil {
 		validateOperand(sr, v)
 	}
@@ -1173,11 +1202,15 @@ func (s *StoreDirect) Get(recid Recid, sr ser.AnySerializer) any {
 }
 
 func (s *StoreDirect) Read(recid Recid, action RecordRead) int64 {
-	b, null := s.readCopy(recid)
+	sp := getScratch()
+	b, null := s.readCopy(recid, *sp)
 	if null {
+		readScratch.Put(sp)
 		return action.OnNull()
 	}
-	return action.OnBytes(bin.NewReader(b), len(b))
+	r := action.OnBytes(bin.NewReader(b), len(b))
+	putScratch(sp, b)
+	return r
 }
 
 func (s *StoreDirect) Update(recid Recid, record any, sr ser.AnySerializer) {
@@ -1225,6 +1258,13 @@ func (s *StoreDirect) CompareAndSwap(recid Recid, expectedOld, newRecord any, sr
 }
 
 func (s *StoreDirect) Delete(recid Recid, _ ser.AnySerializer) {
+	s.deleteLocked(recid)
+	// Deletes free data and recids: hint the background compactor (P7;
+	// no-op when maintenance is disabled). After every lock is released.
+	s.signalCompactionChurn()
+}
+
+func (s *StoreDirect) deleteLocked(recid Recid) {
 	s.checkClosed()
 	s.mutateEnter()
 	defer s.commitLock.RUnlock()
@@ -1272,6 +1312,9 @@ func (s *StoreDirect) Close() error {
 	if s.closed.Load() && !s.poisoned.Load() {
 		return nil
 	}
+	// Before the commit lock: an in-flight bounded CompactStep finishes and
+	// releases it, so shutdown cannot deadlock with compaction.
+	s.stopMaintenanceForClose()
 	s.commitLock.Lock()
 	defer s.commitLock.Unlock()
 	if s.closed.Load() && !s.poisoned.Load() {
@@ -1548,23 +1591,30 @@ func (s *StoreDirect) walPut(recid uint64, capBytes int64, content []byte, hasCo
 // walDelete is Delete but a no-op on void/deleted recids: a cleaned WAL may
 // legitimately contain a delete for a recid it already removed.
 func (s *StoreDirect) walDelete(recid uint64) {
+	if s.walDeleteLocked(recid) {
+		s.signalCompactionChurn()
+	}
+}
+
+func (s *StoreDirect) walDeleteLocked(recid uint64) (churned bool) {
 	s.mutateEnter()
 	defer s.commitLock.RUnlock()
 	s.segWrite(recid)
 	defer s.segWriteEnd(recid)
 	ivval := s.rawIndexGet(recid)
 	if ivval == 0 {
-		return
+		return false
 	}
 	if !ivParityOK(ivval) {
 		panic(mapdb5.NewCorruption("index slot parity broken"))
 	}
 	if ivCapUnits(ivval) == ivCapDeleted {
-		return
+		return false
 	}
 	s.releaseOldData(ivval)
 	s.withStructural(func() { s.freeRecidLocked(recid) })
 	s.indexSet(recid, ivCompose(ivCapDeleted, 0, 0))
+	return true
 }
 
 func (s *StoreDirect) rebuildFreeRecids() {

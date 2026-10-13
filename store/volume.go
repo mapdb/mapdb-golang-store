@@ -6,6 +6,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	mapdb5 "github.com/mapdb/mapdb5-go"
 )
@@ -98,7 +99,12 @@ func (v *volume) loadPage(idx int64) *volumePage {
 		_ = n // short read at EOF → tail stays zero
 	}
 	p := &volumePage{data: data}
-	pages[idx] = p
+	// Publish a NEW array: readers index the current one without growMu
+	// (slice), so writing the element in place would race them.
+	next := make([]*volumePage, len(pages))
+	copy(next, pages)
+	next[idx] = p
+	v.pages.Store(&next)
 	return p
 }
 
@@ -169,6 +175,33 @@ func (v *volume) putU64(offset int64, x uint64) {
 }
 func (v *volume) getU64(offset int64) uint64 {
 	return binary.BigEndian.Uint64(v.view(offset, 8))
+}
+
+// word64 is the 8-aligned big-endian word at offset as an atomically
+// accessible uint64. Slice data comes from make([]byte, 1 MiB), which the
+// runtime aligns far beyond 8 bytes.
+func (v *volume) word64(offset int64) *uint64 {
+	b := v.view(offset, 8)
+	if offset&7 != 0 || uintptr(unsafe.Pointer(&b[0]))&7 != 0 {
+		panic(mapdb5.NewMisuse("atomic volume word is not 8-byte aligned"))
+	}
+	return (*uint64)(unsafe.Pointer(&b[0]))
+}
+
+// getU64Atomic / putU64Atomic access a header word that lock-free readers
+// consult while a writer holding the structural lock updates it (the file
+// tail). Same big-endian bytes as getU64/putU64.
+func (v *volume) getU64Atomic(offset int64) uint64 {
+	var b [8]byte
+	binary.NativeEndian.PutUint64(b[:], atomic.LoadUint64(v.word64(offset)))
+	return binary.BigEndian.Uint64(b[:])
+}
+
+func (v *volume) putU64Atomic(offset int64, x uint64) {
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], x)
+	atomic.StoreUint64(v.word64(offset), binary.NativeEndian.Uint64(b[:]))
+	v.slice(offset).dirty.Store(true)
 }
 func (v *volume) putByte(offset int64, x byte) {
 	v.view(offset, 1)[0] = x
