@@ -25,6 +25,14 @@ matters to you.
   monitors would allow it (QueueLong `TakeUntil`/`ForEach` callbacks, BTree
   external-value barrier from a sync listener, a `Close` issued from inside
   the map's own operation) panic with a descriptive `DBError` instead.
+- **Bulk-load iterators may not re-enter the DB.** `CreateFrom` /
+  `CreateFromSortedByHash` consume the caller's iterator under the catalog
+  lock (as Java does, with its reentrant lock); a DB call from inside that
+  iterator panics `Misuse` and the create fails, instead of deadlocking.
+- **Store reads decode outside store locks.** `StoreDirect.Get`/`Read` copy
+  the record bytes under the lock and run the serializer / `RecordRead`
+  action after releasing it, so a nested store read never deadlocks behind
+  a queued `Commit` (Java's reentrant lock admits the nested read).
 - **No thread interruption.** Blocking queue `Take`/`Put` use timed variants
   and close-handle wakeup; there is no `InterruptedException` equivalent.
 
@@ -107,6 +115,10 @@ matters to you.
   name, so supplying a different hasher on reopen is not detected.
 - **No background expiry.** `expireExecutor` / `expireCompactThreshold` are
   not ported; schedule `HTreeCache.ExpireEvict` yourself.
+- **`Delete` frees only what an open handle can reach.** Java's delete
+  opens the object to clear it; Go opens are typed, so `Delete` frees a
+  collection's entries only when it was opened in this session (atomics
+  always free their record). Open it before `Delete` to reclaim space.
 - **No untyped `db.get(name)`.** Opens are typed (`TreeMap[K,V](d, name, …)`).
 - `IndexTree*` and `SortedTableMap` handles have no close/retire hook (as
   in Java).

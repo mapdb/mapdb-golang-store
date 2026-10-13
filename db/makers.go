@@ -165,10 +165,32 @@ func (m *TreeMapMaker[K, V]) verifyCatalog(cat NameCatalog) {
 // live, THEN retires (retireLast — Clear needs an open handle). The
 // structural root + counter records LEAK, per Java — never freed while a
 // handle may still use them.
+//
+// Runtime wiring (listeners) is applied BEFORE caching, so a wiring panic
+// never leaves a dead handle cached under the name; the uncached handle
+// releases its lease.
 func (m *TreeMapMaker[K, V]) cacheAndReturn(mp *btree.BTreeMap[K, V]) *btree.BTreeMap[K, V] {
-	cacheInsert(m.db, m.name, mp, mp.CloseHandle, mp.Clear, true)
+	adopted := false
+	defer func() {
+		if !adopted {
+			mp.CloseHandle()
+		}
+	}()
 	m.applyListeners(mp)
+	cacheInsert(m.db, m.name, mp, mp.CloseHandle, mp.Clear, true)
+	adopted = true
 	return mp
+}
+
+// publishAndCache wires a freshly built map, then publishes its catalog
+// row and caches it. Wiring first is Java create2's order (configure, then
+// catalogSave + instances.put): a failing listener publishes nothing.
+// The caller's adopted-defer releases built on any panic.
+func (m *TreeMapMaker[K, V]) publishAndCache(built *btree.BTreeMap[K, V]) *btree.BTreeMap[K, V] {
+	m.applyListeners(built)
+	m.db.publishCatalog(func(c NameCatalog) { m.writeCatalog(c, built) })
+	cacheInsert(m.db, m.name, built, built.CloseHandle, built.Clear, true)
+	return built
 }
 
 // Create builds the named map; fails WrongConfiguration when the name is
@@ -188,8 +210,7 @@ func (m *TreeMapMaker[K, V]) Create() (mp *btree.BTreeMap[K, V], err error) {
 			built.CloseHandle() // never cached: release the unpublished lease
 		}
 	}()
-	m.db.publishCatalog(func(c NameCatalog) { m.writeCatalog(c, built) })
-	mp = m.cacheAndReturn(built)
+	mp = m.publishAndCache(built)
 	adopted = true
 	return mp, nil
 }
@@ -238,8 +259,7 @@ func (m *TreeMapMaker[K, V]) CreateOrOpen() (mp *btree.BTreeMap[K, V], err error
 			built.CloseHandle()
 		}
 	}()
-	m.db.publishCatalog(func(c NameCatalog) { m.writeCatalog(c, built) })
-	mp = m.cacheAndReturn(built)
+	mp = m.publishAndCache(built)
 	adopted = true
 	return mp, nil
 }
@@ -259,7 +279,9 @@ func (m *TreeMapMaker[K, V]) CreateFrom(entries iter.Seq2[K, V]) (mp *btree.BTre
 	if _, ok := m.db.catalog[m.name+"#type"]; ok {
 		panic(mapdb5.New(mapdb5.KindWrongConfiguration, "name already exists: "+m.name))
 	}
-	built, cerr := btree.CreateFromSorted(m.db.st, m.cfg(), entries)
+	var built *btree.BTreeMap[K, V]
+	var cerr error
+	m.db.withUserCode(func() { built, cerr = btree.CreateFromSorted(m.db.st, m.cfg(), entries) })
 	if cerr != nil {
 		return nil, notSortedToDBError(cerr)
 	}
@@ -269,8 +291,7 @@ func (m *TreeMapMaker[K, V]) CreateFrom(entries iter.Seq2[K, V]) (mp *btree.BTre
 			built.CloseHandle()
 		}
 	}()
-	m.db.publishCatalog(func(c NameCatalog) { m.writeCatalog(c, built) })
-	mp = m.cacheAndReturn(built)
+	mp = m.publishAndCache(built)
 	adopted = true
 	return mp, nil
 }
@@ -438,7 +459,9 @@ func (m *TreeSetMaker[K]) CreateFrom(elements iter.Seq[K]) (s *NavigableSet[K], 
 			}
 		}
 	}
-	mp, cerr := btree.CreateFromSorted(m.db.st, m.cfg(), iter.Seq2[K, struct{}](entries))
+	var mp *btree.BTreeMap[K, struct{}]
+	var cerr error
+	m.db.withUserCode(func() { mp, cerr = btree.CreateFromSorted(m.db.st, m.cfg(), iter.Seq2[K, struct{}](entries)) })
 	if cerr != nil {
 		return nil, notSortedToDBError(cerr)
 	}

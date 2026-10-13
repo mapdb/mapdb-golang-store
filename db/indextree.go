@@ -289,7 +289,11 @@ func (m *SortedTableMapMaker[K, V]) CreateFrom(entries iter.Seq2[K, V]) (t *sort
 	defer m.db.adminMu.Unlock()
 	m.db.checkCreatable(m.name)
 	m.requireFormats()
-	built, cerr := sortedtable.CreateFromSortedN(m.db.st, m.kf, m.vf, m.entriesPerPage, entries)
+	var built *sortedtable.SortedTableMap[K, V]
+	var cerr error
+	m.db.withUserCode(func() {
+		built, cerr = sortedtable.CreateFromSortedN(m.db.st, m.kf, m.vf, m.entriesPerPage, entries)
+	})
 	if cerr != nil {
 		return nil, notSortedToDBError(cerr)
 	}

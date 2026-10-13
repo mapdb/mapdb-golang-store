@@ -1491,8 +1491,16 @@ func (s *StoreWAL) Commit() {
 
 func (s *StoreWAL) Compact() { s.Checkpoint() }
 
-// Rollback discards all uncommitted mutations, including appends.
+// Rollback discards all uncommitted mutations, including appends. On a
+// read-only store there is nothing staged: a no-op (Java rollback has no
+// checkWritable).
 func (s *StoreWAL) Rollback() {
+	s.mu.Lock()
+	if !s.closed.Load() && s.st.readOnly {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
 	st := s.writeOpen()
 	defer s.writeOpenEnd()
 	var created []uint64

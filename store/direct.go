@@ -1139,23 +1139,33 @@ func (s *StoreDirect) Put(record any, sr ser.AnySerializer) Recid {
 	return recid
 }
 
-func (s *StoreDirect) Get(recid Recid, sr ser.AnySerializer) any {
+// readCopy returns a private copy of recid's content (null=true for a null
+// record). Get and Read decode the copy AFTER every store lock is released:
+// a serializer or RecordRead action may re-enter the store, and Go's
+// RWMutex — unlike Java's ReentrantReadWriteLock — blocks a nested read
+// once a Commit/Close/Compact writer is queued, which would deadlock.
+func (s *StoreDirect) readCopy(recid Recid) (b []byte, null bool) {
 	s.mutateEnter()
 	defer s.commitLock.RUnlock()
 	s.segRead(recid)
 	defer s.segReadEnd(recid)
 	ivval := s.indexGetChecked(recid)
 	if ivCapUnits(ivval) == ivCapNull {
+		return nil, true
+	}
+	if ivIsLinked(ivval) {
+		return s.linkedGet(ivval), false
+	}
+	off, used := s.readUsed(ivval)
+	return append([]byte(nil), s.vol.view(off+4, used)...), false
+}
+
+func (s *StoreDirect) Get(recid Recid, sr ser.AnySerializer) any {
+	b, null := s.readCopy(recid)
+	if null {
 		return nil
 	}
-	var v any
-	if ivIsLinked(ivval) {
-		b := s.linkedGet(ivval)
-		v = sr.DeserializeAny(bin.NewReader(b), len(b))
-	} else {
-		off, used := s.readUsed(ivval)
-		v = sr.DeserializeAny(bin.NewReader(s.vol.view(off+4, used)), int(used))
-	}
+	v := sr.DeserializeAny(bin.NewReader(b), len(b))
 	if v != nil {
 		validateOperand(sr, v)
 	}
@@ -1163,20 +1173,11 @@ func (s *StoreDirect) Get(recid Recid, sr ser.AnySerializer) any {
 }
 
 func (s *StoreDirect) Read(recid Recid, action RecordRead) int64 {
-	s.mutateEnter()
-	defer s.commitLock.RUnlock()
-	s.segRead(recid)
-	defer s.segReadEnd(recid)
-	ivval := s.indexGetChecked(recid)
-	if ivCapUnits(ivval) == ivCapNull {
+	b, null := s.readCopy(recid)
+	if null {
 		return action.OnNull()
 	}
-	if ivIsLinked(ivval) {
-		b := s.linkedGet(ivval)
-		return action.OnBytes(bin.NewReader(b), len(b))
-	}
-	off, used := s.readUsed(ivval)
-	return action.OnBytes(bin.NewReader(s.vol.view(off+4, used)), int(used))
+	return action.OnBytes(bin.NewReader(b), len(b))
 }
 
 func (s *StoreDirect) Update(recid Recid, record any, sr ser.AnySerializer) {
@@ -1426,6 +1427,13 @@ func (s *StoreDirect) Append(recid Recid, data []byte) int64 {
 	s.segWrite(recid)
 	defer s.segWriteEnd(recid)
 	ivval := s.indexGetChecked(recid)
+	if len(data) == 0 {
+		// Appending nothing cannot fail and needs no capacity: a no-op
+		// returning the current length for EVERY record shape (Java
+		// appendInner). Establishing a record here would diverge from
+		// StoreWAL, which stages nothing for an empty append.
+		return s.contentLen(ivval)
+	}
 	if ivIsLinked(ivval) {
 		return AppendRefused
 	}
@@ -1449,6 +1457,23 @@ func (s *StoreDirect) Append(recid Recid, data []byte) int64 {
 	return used + int64(len(data))
 }
 
+// contentLen is the record's current content length (Java
+// currentContentLen). Segment lock must be held.
+func (s *StoreDirect) contentLen(ivval uint64) int64 {
+	if ivCapUnits(ivval) == ivCapNull {
+		return 0
+	}
+	if ivIsLinked(ivval) {
+		var total int64
+		for _, c := range s.linkedChain(ivval) {
+			total += c[1]
+		}
+		return total
+	}
+	_, used := s.readUsed(ivval)
+	return used
+}
+
 func (s *StoreDirect) CapacityRemaining(recid Recid) int64 {
 	s.mutateEnter()
 	defer s.commitLock.RUnlock()
@@ -1463,9 +1488,6 @@ func (s *StoreDirect) CapacityRemaining(recid Recid) int64 {
 }
 
 func (s *StoreDirect) UpdateWithHeadroom(recid Recid, record any, sr ser.AnySerializer, headroom int) {
-	if record == nil {
-		panic(mapdb5.New(mapdb5.KindMisuse, "UpdateWithHeadroom requires a record"))
-	}
 	s.updateWithHeadroom(recid, record, sr, int64(headroom))
 }
 

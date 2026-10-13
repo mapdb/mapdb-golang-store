@@ -76,30 +76,27 @@ func (c *chCond) wait(mu *sync.Mutex) {
 func (c *chCond) waitTimeout(mu *sync.Mutex, d time.Duration) bool {
 	ch := c.register()
 	mu.Unlock()
-	if d <= 0 {
+	if d > 0 {
+		t := time.NewTimer(d)
 		select {
 		case <-ch:
+			t.Stop()
 			mu.Lock()
 			return true
-		default:
-			mu.Lock()
-			c.deregister(ch)
-			return false
+		case <-t.C:
 		}
 	}
-	t := time.NewTimer(d)
-	var signaled bool
+	mu.Lock()
+	// signal pops the channel and posts the token under mu, so a signal
+	// that raced the timeout (delivered while this waiter re-acquired mu)
+	// is now visible: honour it rather than drop it.
 	select {
 	case <-ch:
-		signaled = true
-	case <-t.C:
+		return true
+	default:
 	}
-	mu.Lock()
-	t.Stop()
-	if !signaled {
-		c.deregister(ch)
-	}
-	return signaled
+	c.deregister(ch)
+	return false
 }
 
 // signal wakes the OLDEST waiter (Java Condition.signal/notify_one). The

@@ -26,6 +26,7 @@ const (
 // return the receiver for chaining; each mutates the maker (Java parity —
 // a maker is single-use).
 type DBMaker struct {
+	makeErr error // deferred builder failure (TempFileDB), returned by Make
 	backend backend
 	path    string // backendFile only
 
@@ -64,10 +65,13 @@ func FileDB(path string) *DBMaker { return &DBMaker{backend: backendFile, path: 
 
 // TempFileDB creates a fresh temporary-file DB deleted after close (Java
 // DBMaker.tempFileDB()). The file is placed in the system temp dir.
+//
+// A failure to create the file is deferred to Make, which returns it:
+// builders never panic, constructors return error.
 func TempFileDB() *DBMaker {
 	f, err := os.CreateTemp("", "mapdb5-*.db")
 	if err != nil {
-		panic(mapdb5.NewIO(err))
+		return &DBMaker{backend: backendFile, makeErr: mapdb5.NewIO(err)}
 	}
 	path := f.Name()
 	_ = f.Close()
@@ -144,6 +148,9 @@ func (m *DBMaker) CloseOnJVMShutdownWeakReference() *DBMaker { return m }
 
 // Make builds the DB (Java make()).
 func (m *DBMaker) Make() (*DB, error) {
+	if m.makeErr != nil {
+		return nil, m.makeErr
+	}
 	// Reject illegal option combinations (Java DBMaker.make guards).
 	wrongConfig := func(msg string) (*DB, error) {
 		return nil, mapdb5.New(mapdb5.KindWrongConfiguration, msg)

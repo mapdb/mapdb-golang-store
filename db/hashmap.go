@@ -397,6 +397,12 @@ func (m *HashMapMaker[K, V]) createLocked() ConcurrentHashMap[K, V] {
 	}
 	n := m.name
 	header := built.HeaderRecid()
+	if counterRecid != 0 {
+		built = withCounter(m.db.st, built, counterRecid)
+	}
+	// Runtime wiring before publish (Java create2): a failing listener or
+	// loader publishes nothing and the adopted-defer releases built.
+	m.configure(built)
 	m.db.publishCatalog(func(c NameCatalog) {
 		c[n+"#type"] = "HashMap"
 		c[n+"#keySerializer"] = ser.DescriptorOrCustom(m.ks)
@@ -407,12 +413,9 @@ func (m *HashMapMaker[K, V]) createLocked() ConcurrentHashMap[K, V] {
 		c[n+"#kind"] = kind
 		c[n+"#counterRecid"] = itoa(counterRecid)
 	})
-	if counterRecid != 0 {
-		built = withCounter(m.db.st, built, counterRecid)
-	}
-	mp := m.cacheAndConfigure(built)
+	cacheInsert(m.db, m.name, built, built.CloseHandle, built.Clear, true)
 	adopted = true
-	return mp
+	return built
 }
 
 func (m *HashMapMaker[K, V]) verifyCatalog(cat NameCatalog) (kind string, h mdhash.Hasher[K]) {
@@ -459,9 +462,19 @@ func (m *HashMapMaker[K, V]) openLocked() ConcurrentHashMap[K, V] {
 
 // cacheAndConfigure caches the handle (delete clears entries while live,
 // then retires) and applies the runtime-only wiring.
+//
+// Wiring runs BEFORE caching, so a wiring panic never leaves a dead handle
+// cached under the name; the uncached handle releases its lease.
 func (m *HashMapMaker[K, V]) cacheAndConfigure(mp ConcurrentHashMap[K, V]) ConcurrentHashMap[K, V] {
-	cacheInsert(m.db, m.name, mp, mp.CloseHandle, mp.Clear, true)
+	adopted := false
+	defer func() {
+		if !adopted {
+			mp.CloseHandle()
+		}
+	}()
 	m.configure(mp)
+	cacheInsert(m.db, m.name, mp, mp.CloseHandle, mp.Clear, true)
+	adopted = true
 	return mp
 }
 
@@ -847,6 +860,7 @@ func (m *HashMap48Maker[K, V]) publish(built *htree.HTreeMap48[K, V], marker str
 		}
 	}()
 	n := m.name
+	m.configure(built) // wiring before publish (Java create2)
 	m.db.publishCatalog(func(c NameCatalog) {
 		c[n+"#type"] = "HashMap48"
 		c[n+"#keySerializer"] = ser.DescriptorOrCustom(m.ks)
@@ -856,7 +870,6 @@ func (m *HashMap48Maker[K, V]) publish(built *htree.HTreeMap48[K, V], marker str
 		m.geo.write(c, n)
 	})
 	cacheInsert(m.db, n, built, built.CloseHandle, built.Clear, true)
-	m.configure(built)
 	adopted = true
 	return built
 }
@@ -884,8 +897,15 @@ func (m *HashMap48Maker[K, V]) openLocked() *htree.HTreeMap48[K, V] {
 	if err != nil {
 		panic(err)
 	}
-	cacheInsert(m.db, n, mp, mp.CloseHandle, mp.Clear, true)
+	adopted := false
+	defer func() {
+		if !adopted {
+			mp.CloseHandle()
+		}
+	}()
 	m.configure(mp)
+	cacheInsert(m.db, n, mp, mp.CloseHandle, mp.Clear, true)
+	adopted = true
 	return mp
 }
 
@@ -929,7 +949,9 @@ func (m *HashMap48Maker[K, V]) CreateFromSortedByHash(entries iter.Seq2[K, V]) (
 		panic(mapdb5.New(mapdb5.KindWrongConfiguration, "hashMap48 bulk creation requires an explicit hashSeed"))
 	}
 	h, marker := createHasher64(m.hasher, m.ks)
-	built, cerr := htree.CreateHTreeMap48FromSortedByHash(m.db.st, m.config(h), entries)
+	var built *htree.HTreeMap48[K, V]
+	var cerr error
+	m.db.withUserCode(func() { built, cerr = htree.CreateHTreeMap48FromSortedByHash(m.db.st, m.config(h), entries) })
 	if cerr != nil {
 		return nil, notSortedToDBError(cerr)
 	}
@@ -1074,7 +1096,11 @@ func (m *HashSet48Maker[K]) CreateFromSortedByHash(elements iter.Seq[K]) (s *Map
 			}
 		}
 	}
-	built, cerr := htree.CreateHTreeMap48FromSortedByHash(m.db.st, m.config(h), iter.Seq2[K, struct{}](entries))
+	var built *htree.HTreeMap48[K, struct{}]
+	var cerr error
+	m.db.withUserCode(func() {
+		built, cerr = htree.CreateHTreeMap48FromSortedByHash(m.db.st, m.config(h), iter.Seq2[K, struct{}](entries))
+	})
 	if cerr != nil {
 		return nil, notSortedToDBError(cerr)
 	}

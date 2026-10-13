@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 
 	mapdb5 "github.com/mapdb/mapdb5-go"
+	"github.com/mapdb/mapdb5-go/internal/handle"
 	"github.com/mapdb/mapdb5-go/store"
 )
 
@@ -56,8 +57,11 @@ type DB struct {
 	st store.Store
 
 	adminMu sync.Mutex // serializes catalog + cache + lifecycle mutations
-	catalog NameCatalog
-	cache   map[string]*cacheEntry
+	// userCodeGoid is the goroutine running caller code (a bulk-load
+	// iterator) while holding adminMu; 0 otherwise. See withUserCode.
+	userCodeGoid atomic.Uint64
+	catalog      NameCatalog
+	cache        map[string]*cacheEntry
 	// draining is set while rollback detaches the cache and retires its
 	// handles OUTSIDE the admin lock: a catalog mutation or handle
 	// adoption landing in that window would be rewound while its handle
@@ -142,10 +146,32 @@ func (d *DB) Store() store.Store { return d.st }
 // KindClosed once it wins the lock, so it cannot mutate into a closing DB.
 // All catalog/cache mutations funnel through here. Callers defer unlock.
 func (d *DB) lockAdmin() {
+	d.checkNotInUserCode()
 	d.adminMu.Lock()
 	if d.state.Load() != dbOpen {
 		d.adminMu.Unlock()
 		panic(mapdb5.New(mapdb5.KindClosed, "db is closed"))
+	}
+}
+
+// withUserCode runs caller-supplied code (a CreateFrom iterator) while the
+// caller holds adminMu. Java's reentrant write lock lets such code re-enter
+// the DB; Go's mutex would deadlock, so a re-entry from the same goroutine
+// panics Misuse instead (PORTING-GAPS: re-entrancy panics, never hangs).
+// The lock is kept — building outside it would race a concurrent Rollback
+// discarding the half-built records.
+func (d *DB) withUserCode(f func()) {
+	d.userCodeGoid.Store(handle.Goid())
+	defer d.userCodeGoid.Store(0)
+	f()
+}
+
+// checkNotInUserCode is the withUserCode tripwire; Goid is only computed
+// while a bulk load is running.
+func (d *DB) checkNotInUserCode() {
+	if g := d.userCodeGoid.Load(); g != 0 && g == handle.Goid() {
+		panic(mapdb5.New(mapdb5.KindMisuse,
+			"the DB cannot be re-entered from a CreateFrom iterator (it runs under the catalog lock)"))
 	}
 }
 
@@ -360,6 +386,12 @@ func (d *DB) Rename(old, newName string) {
 // delete). Returns false when the name did not exist. The DB does NOT
 // commit. A teardown failure leaves an unlinked leak, never a catalog
 // pointer to destroyed data.
+//
+// Data is freed only through a handle opened in this DB session (atomics
+// excepted: their single record is always freed). Java opens the object
+// first; Go cannot, since opens are typed and need the caller's codecs. To
+// reclaim a collection's records, open it with its maker before Delete —
+// otherwise its entries leak (unreachable, never corrupting).
 func (d *DB) Delete(name string) bool {
 	found, atomicRecid, detached := d.deleteUnlink(name)
 	if !found {
@@ -477,6 +509,7 @@ func cacheInsert[T any](d *DB, name string, handle T, retire, teardown func(), r
 // primary. NO auto-commit — a WAL's uncommitted changes are intentionally
 // discarded.
 func (d *DB) Close() error {
+	d.checkNotInUserCode()
 	if !d.state.CompareAndSwap(dbOpen, dbClosing) {
 		// Another caller already won the transition; wait until the store
 		// is actually closed before returning (a returning Close must

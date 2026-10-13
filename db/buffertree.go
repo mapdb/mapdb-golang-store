@@ -209,7 +209,11 @@ func (m *BufferTreeMapMaker[K, V]) CreateFrom(entries iter.Seq2[K, V]) (mp *btre
 		panic(mapdb5.New(mapdb5.KindWrongConfiguration, "name already exists: "+m.name))
 	}
 	cfg := m.cfgFor(m.maxNodeSize, m.bufferBytes, m.leafHeadroom)
-	built, cerr := btree.CreateBufferTreeFromSortedFill(m.deltaStore(), cfg, max(2, m.maxNodeSize*3/4), entries)
+	var built *btree.BufferTreeMap[K, V]
+	var cerr error
+	m.db.withUserCode(func() {
+		built, cerr = btree.CreateBufferTreeFromSortedFill(m.deltaStore(), cfg, max(2, m.maxNodeSize*3/4), entries)
+	})
 	if cerr != nil {
 		return nil, notSortedToDBError(cerr)
 	}
